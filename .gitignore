@@ -1,0 +1,41 @@
+# Release artifacts and temporary downloads are stored beside Project, never tracked
+/Release/
+/download/
+
+# Build caches and intermediate files
+.build/
+.swiftpm/
+**/bin/
+**/obj/
+AppPackages/
+.DerivedData/
+DerivedData/
+
+# macOS build outputs and local IDE state
+**/.DS_Store
+**/.xcuserstate
+**/xcuserdata/
+**/DerivedData/
+*.app/
+*.dmg
+
+# Windows local IDE state and packages
+.vs/
+/.signing/
+.certs/
+*.pfx
+*.cer
+Package.StoreAssociation.xml
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+
+# Local agent workspace data
+.workbuddy/
+
+# Legacy / generated release material accidentally retained in older trees
+**/release/*.exe
+**/release/*.zip
+**/release/*.dmg
+**/release/*.msix

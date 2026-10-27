@@ -1,0 +1,10 @@
+Generator: built-in image_gen (transparent_background=true)
+
+Use case: logo-brand.
+Asset type: final production desktop application icon for 飞鸽快传 (Feige Transfer), a local-network file and message transfer app for Windows and macOS.
+Primary request: Design one polished, distinctive, minimal app icon: a white dove in fast forward flight towards the upper right, its sweeping wing subtly suggesting a sheet of paper being sent. The dove must read as a bird, with a short subtle beak and a confident single raised wing; use a graceful broad continuous silhouette with a small amount of ice-blue fold shading for dimensionality. Prioritize recognition at 24 and 32 pixels. A refined original brand mark, approachable and reliable.
+Scene/backdrop: One rounded-square blue app tile, rich cobalt at lower left transitioning gently to brighter cyan-blue at upper right; extremely subtle dimensional edge lighting. True transparent pixels outside the tile. The tile occupies about 80% of the square canvas width, centered, with generous equal transparent margin on all four sides. Rounded corners with radius about 22% of tile width. No ground plane or cast shadow outside the tile.
+Style/medium: clean precision-crafted contemporary desktop icon, vector-like contours, restrained soft depth, no busy textures. White dove large and centered inside the tile with comfortable internal padding. Slight dynamic diagonal, balanced optical weight.
+Composition: exactly ONE standalone icon on a square canvas, front orthographic view. No presentation board, no variations, no surrounding UI, no mockup, no labels. Use the full available image resolution.
+Text: none.
+Avoid: letters, Chinese text, watermark, badges, cables, wifi bars, arrows, extra wings, multiple birds, envelope outline, tiny details, photographic pigeon, cartoon face, paper airplane replacing the bird, thick outlines, excessive gloss, complex gradients.

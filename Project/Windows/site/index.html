@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>飞鸽快传 — 局域网文件互传</title>
+<meta name="description" content="飞鸽快传是一个在局域网内直接互传文件和消息的桌面应用。不经过云端，同一网络下即可发送文字、图片和文件。">
+<link rel="icon" href="assets/favicon.png">
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f7f9fc;
+    --text: #0f172a;
+    --text-soft: #5b6779;
+    --line: #e6ebf2;
+    --brand: #1a6dff;
+    --brand-soft: #eaf1ff;
+    --shadow: 0 1px 2px rgba(15,23,42,.04), 0 12px 32px -12px rgba(15,23,42,.14);
+    --radius: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220; --bg-soft: #101a2c; --text: #f2f6fc; --text-soft: #98a6bd;
+      --line: #1f2c42; --brand: #4d90ff; --brand-soft: #16233a;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 16px 40px -16px rgba(0,0,0,.6);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- nav ---------- */
+  nav {
+    position: sticky; top: 0; z-index: 20; backdrop-filter: saturate(180%) blur(14px);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 62px; }
+  .brand { min-width: 0; flex: 0 1 auto; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; letter-spacing: -.2px; text-decoration: none; }
+  .brand img { width: 30px; height: 30px; border-radius: 8px; }
+  .nav-links { display: flex; align-items: center; gap: 26px; font-size: 14px; }
+  .nav-links a { text-decoration: none; color: var(--text-soft); transition: color .15s; }
+  .nav-links a:hover { color: var(--text); }
+  .nav-cta {
+    text-decoration: none; font-size: 14px; font-weight: 600; padding: 8px 16px;
+    border-radius: 9px; background: var(--brand); color: #fff !important;
+  }
+  @media (max-width: 680px) {
+    .nav-links a:not(.nav-cta) { display: none; }
+    .nav-cta { padding: 7px 12px; font-size: 13px; white-space: nowrap; }
+    .brand { font-size: 15px; gap: 8px; }
+    .brand img { width: 26px; height: 26px; }
+    .wrap { padding: 0 18px; }
+  }
+
+  /* ---------- hero ---------- */
+  header.hero { padding: 88px 0 76px; text-align: center; position: relative; overflow: hidden; }
+  header.hero::before {
+    content: ''; position: absolute; inset: -40% 0 auto; height: 620px; z-index: -1;
+    background: radial-gradient(ellipse 60% 50% at 50% 0%, color-mix(in srgb, var(--brand) 16%, transparent), transparent 70%);
+  }
+  .hero-icon { width: 96px; height: 96px; border-radius: 24px; box-shadow: var(--shadow); margin-bottom: 28px; }
+  h1 { font-size: clamp(34px, 5.4vw, 54px); line-height: 1.15; letter-spacing: -.03em; font-weight: 700; }
+  .tagline { margin: 20px auto 0; max-width: 620px; font-size: clamp(16px, 2vw, 19px); color: var(--text-soft); }
+  .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 36px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px; text-decoration: none;
+    font-size: 15px; font-weight: 600; padding: 13px 26px; border-radius: 11px;
+    transition: transform .12s ease, box-shadow .12s ease, background .15s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--brand); color: #fff; box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--brand) 70%, transparent); }
+  .btn-primary:hover { box-shadow: 0 12px 26px -8px color-mix(in srgb, var(--brand) 75%, transparent); }
+  .btn-ghost { background: var(--bg-soft); color: var(--text); border: 1px solid var(--line); }
+  .hero-meta { margin-top: 18px; font-size: 13px; color: var(--text-soft); }
+
+  /* ---------- sections ---------- */
+  section { padding: 76px 0; }
+  section.soft { background: var(--bg-soft); border-block: 1px solid var(--line); }
+  .kicker { font-size: 13px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--brand); }
+  h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -.02em; line-height: 1.25; margin-top: 12px; font-weight: 680; }
+  .lead { margin-top: 14px; max-width: 640px; color: var(--text-soft); font-size: 16px; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 42px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 26px 24px; box-shadow: var(--shadow);
+  }
+  section.soft .card { background: var(--bg); }
+  .card .ico {
+    width: 42px; height: 42px; border-radius: 11px; background: var(--brand-soft); color: var(--brand);
+    display: grid; place-items: center; margin-bottom: 16px; font-size: 20px;
+  }
+  .card h3 { font-size: 16.5px; font-weight: 640; letter-spacing: -.01em; }
+  .card p { margin-top: 8px; font-size: 14.5px; color: var(--text-soft); }
+
+  /* ---------- steps ---------- */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 42px; counter-reset: s; }
+  @media (max-width: 860px) { .steps { grid-template-columns: 1fr; } }
+  .step { position: relative; padding-left: 52px; }
+  .step::before {
+    counter-increment: s; content: counter(s); position: absolute; left: 0; top: 0;
+    width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--brand); color: #fff; font-size: 14px; font-weight: 650;
+  }
+  .step h3 { font-size: 16px; font-weight: 640; }
+  .step p { margin-top: 6px; font-size: 14.5px; color: var(--text-soft); }
+
+  /* ---------- download ---------- */
+  .dl-card {
+    margin-top: 40px; background: var(--bg); border: 1px solid var(--line); border-radius: 20px;
+    padding: 34px; box-shadow: var(--shadow);
+    display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap;
+  }
+  .dl-left { display: flex; align-items: center; gap: 20px; }
+  .dl-left img { width: 60px; height: 60px; border-radius: 15px; }
+  .dl-left h3 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+  .dl-left .meta { font-size: 13.5px; color: var(--text-soft); margin-top: 4px; }
+  .badge {
+    display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    background: var(--brand-soft); color: var(--brand); margin-left: 8px; vertical-align: 2px;
+  }
+  .badge.warn { background: #fff3e6; color: #b4650f; }
+  .dl-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  @media (max-width: 640px) {
+    .dl-card { padding: 24px; gap: 20px; }
+    .dl-left { gap: 14px; }
+    .dl-actions { width: 100%; }
+    .dl-actions .btn { width: 100%; justify-content: center; }
+    .actions .btn { width: 100%; justify-content: center; }
+    section { padding: 56px 0; }
+    header.hero { padding: 64px 0 56px; }
+  }
+  .hint { margin-top: 18px; font-size: 13px; color: var(--text-soft); }
+  .hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+    background: var(--bg-soft); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); }
+
+  /* ---------- faq ---------- */
+  details {
+    border-bottom: 1px solid var(--line); padding: 18px 0;
+  }
+  details:first-of-type { border-top: 1px solid var(--line); }
+  summary {
+    cursor: pointer; font-size: 15.5px; font-weight: 600; list-style: none;
+    display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: '+'; color: var(--text-soft); font-weight: 400; font-size: 20px; }
+  details[open] summary::after { content: '−'; }
+  details p { margin-top: 12px; font-size: 14.5px; color: var(--text-soft); max-width: 760px; }
+
+  footer { padding: 44px 0; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-soft); }
+  .foot-inner { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: center; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top"><img src="assets/icon-256.png" alt="">飞鸽快传</a>
+    <div class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#how">怎么用</a>
+      <a href="#download">下载</a>
+      <a href="#faq">常见问题</a>
+      <a class="nav-cta" href="#download">立即下载</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <img class="hero-icon" src="assets/icon-256.png" alt="飞鸽快传图标">
+    <h1>把文件直接送到<br>另一台电脑</h1>
+    <p class="tagline">飞鸽快传是一个局域网内直接互传的桌面应用。不经过云端、不用登录，同一个网络下就能发送文字、图片和文件。</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="#download">下载 Windows 版</a>
+      <a class="btn btn-ghost" href="#how">看看怎么用</a>
+    </div>
+    <p class="hero-meta" id="heroMeta">适用于 Windows 10 / 11</p>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <p class="kicker">为什么用它</p>
+    <h2>简单、直接、不绕路</h2>
+    <p class="lead">没有账号体系，没有二维码扫码，也不需要把文件先传到别的地方再下载。两台电脑在同一网络下就能互发。</p>
+    <div class="grid">
+      <div class="card">
+        <div class="ico">⚡</div>
+        <h3>局域网直连</h3>
+        <p>数据在两台电脑之间直接传输，不经过第三方服务器，同一网络下速度取决于你的路由器和网线。</p>
+      </div>
+      <div class="card">
+        <div class="ico">🔒</div>
+        <h3>连接需对方同意</h3>
+        <p>对方接受后才会建立会话。设备按指纹识别，重装或换机后需要重新确认。</p>
+      </div>
+      <div class="card">
+        <div class="ico">📄</div>
+        <h3>文字、图片、文件</h3>
+        <p>发一段文字、一张截图，或者一个几百兆的文件，都在同一个窗口里完成，收发记录可回看。</p>
+      </div>
+      <div class="card">
+        <div class="ico">🎯</div>
+        <h3>自动发现设备</h3>
+        <p>打开就在设备列表里看到同一网络下的其他电脑，也可以手动输入地址连接。</p>
+      </div>
+      <div class="card">
+        <div class="ico">💾</div>
+        <h3>接收位置可控</h3>
+        <p>收到的文件保存到你指定的文件夹，默认在“下载”目录下，随时可以改。</p>
+      </div>
+      <div class="card">
+        <div class="ico">🔄</div>
+        <h3>应用内更新</h3>
+        <p>有新版本时应用内提示，下载安装后自动重新打开，不需要手动找安装包。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="soft" id="how">
+  <div class="wrap">
+    <p class="kicker">怎么用</p>
+    <h2>三步开始传输</h2>
+    <div class="steps">
+      <div class="step">
+        <h3>两台电脑都装好</h3>
+        <p>在需要互传的电脑上分别安装飞鸽快传，并连接到同一个局域网。</p>
+      </div>
+      <div class="step">
+        <h3>在列表里选中对方</h3>
+        <p>打开应用会自动发现同一网络中的设备；也可以手动添加对方显示的地址。</p>
+      </div>
+      <div class="step">
+        <h3>对方同意后开传</h3>
+        <p>对方确认连接后，就可以发送文字、图片或文件。传输完成后对方会收到保存确认。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="download">
+  <div class="wrap">
+    <p class="kicker">下载</p>
+    <h2>选择适合你的版本</h2>
+    <p class="lead">Windows 版为独立安装程序，无需额外安装运行库。</p>
+
+    <div class="dl-card" id="dlCard">
+      <div class="dl-left">
+        <img src="assets/icon-256.png" alt="">
+        <div>
+          <h3>飞鸽快传 for Windows<span class="badge" id="dlBadge">x64</span></h3>
+          <div class="meta" id="dlMeta">正在获取版本信息…</div>
+        </div>
+      </div>
+      <div class="dl-actions">
+        <a class="btn btn-primary" id="dlBtn" href="#">下载安装包</a>
+      </div>
+    </div>
+    <p class="hint" id="dlHint"></p>
+  </div>
+</section>
+
+<section class="soft" id="faq">
+  <div class="wrap">
+    <p class="kicker">常见问题</p>
+    <h2>你可能想知道</h2>
+    <div style="margin-top:32px">
+      <details open>
+        <summary>需要在同一个 Wi-Fi 下吗？</summary>
+        <p>两台电脑需要处在可以互相访问的同一局域网中。访客网络、开启了设备隔离的路由器、或者通过 VPN 连接时，可能无法互相发现，这种情况可以尝试手动输入对方的地址和端口。</p>
+      </details>
+      <details>
+        <summary>文件会经过云端服务器吗？</summary>
+        <p>不会。传输发生在两台电脑之间，应用不依赖云端中转。应用内的更新检查只访问局域网中的更新服务。</p>
+      </details>
+      <details>
+        <summary>连接时要确认什么？</summary>
+        <p>对方发起连接后，你的电脑会弹窗提示并显示对方设备名称和接收文件夹的位置，只有你同意后才会建立会话。设备身份按指纹识别，避免和陌生设备建立连接。</p>
+      </details>
+      <details>
+        <summary>支持哪些系统？</summary>
+        <p>当前提供 Windows 10 / 11 版本，需要 64 位系统。Windows 10 需 1809 及以上版本。</p>
+      </details>
+      <details>
+        <summary>怎么更新到新版本？</summary>
+        <p>应用会定期检查更新，发现新版本时在窗口顶部提示。点击更新后会自动下载、安装并重新打开应用。</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-inner">
+    <div>飞鸽快传 · 局域网文件互传</div>
+    <div id="footNote">© Songli</div>
+  </div>
+</footer>
+
+<script>
+const CHANNELS = ['stable', 'preview'];
+
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  const mb = bytes / 1024 / 1024;
+  return (mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : mb.toFixed(0) + ' MB');
+}
+function b64utf8(b64) {
+  const bin = atob(String(b64).replace(/-/g, '+').replace(/_/g, '/'));
+  return new TextDecoder('utf-8').decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+}
+
+async function loadRelease() {
+  // Stable first: a published stable build supersedes any preview build.
+  for (const channel of CHANNELS) {
+    try {
+      const res = await fetch(`../updates/windows/${channel}/feige-windows-update.json`, { cache: 'no-store' });
+      if (!res.ok) continue;
+      const payload = JSON.parse(b64utf8((await res.json()).payload));
+      const releases = (payload.releases || []).filter(r => r.platform === 'windows');
+      if (!releases.length) continue;
+      const release = releases.sort((a, b) => b.build - a.build)[0];
+      release.channel = channel;
+      return release;
+    } catch { /* try the next channel */ }
+  }
+  throw new Error('no published release');
+}
+
+loadRelease().then(r => {
+  const name = decodeURIComponent((r.downloadUrl || '').split('/').pop() || '');
+  document.getElementById('dlBadge').textContent = r.architecture || 'x64';
+  document.getElementById('dlMeta').textContent =
+    `版本 ${r.version} · ${fmtSize(r.size)} · Windows 10 / 11 64 位`;
+  document.getElementById('dlBtn').href = r.downloadUrl;
+  document.getElementById('dlBtn').setAttribute('download', name);
+  document.getElementById('heroMeta').textContent =
+    `适用于 Windows 10 / 11 · 最新版本 ${r.version}`;
+  const label = r.channel === 'stable' ? '正式版' : '预览版（内部测试）';
+  document.getElementById('dlHint').innerHTML =
+    `下载完成后运行安装程序即可。当前为${label}，文件名 <code>${name.replace(/[<&>]/g, '')}</code>。`;
+}).catch(() => {
+  document.getElementById('dlMeta').textContent = '暂时无法获取版本信息，请稍后再试';
+  document.getElementById('dlBtn').style.opacity = '.5';
+  document.getElementById('dlBtn').setAttribute('aria-disabled', 'true');
+  document.getElementById('dlBtn').href = '#download';
+  document.getElementById('dlHint').textContent = '';
+  document.getElementById('footNote').textContent = '下载服务暂不可用';
+});
+</script>
+</body>
+</html>
