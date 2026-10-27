@@ -1,0 +1,260 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page x:Class="Feige.App.Pages.SendPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:disc="using:Feige.Core.Discovery" xmlns:svc="using:Feige.App.Services">
+    <Grid x:Name="PageRoot" Background="{ThemeResource FeigePanelBrush}" SizeChanged="OnPageSizeChanged">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition x:Name="ConversationColumn" Width="292" />
+            <ColumnDefinition x:Name="ChatColumn" Width="*" />
+        </Grid.ColumnDefinitions>
+            <InfoBar x:Name="StatusBar" Grid.Row="0" Grid.ColumnSpan="2" IsOpen="False" IsClosable="False" Margin="16,10,16,0" Message="正在准备安全连接…">
+                <InfoBar.ActionButton><Button x:Name="StartupRetry" Content="继续设置" Click="OnRestartClick" /></InfoBar.ActionButton>
+            </InfoBar>
+        <Grid x:Name="ConversationPane" Grid.Row="1" Padding="12,0" BorderBrush="{ThemeResource FeigeDividerBrush}" BorderThickness="0,0,1,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="72" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="2*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="70" />
+            </Grid.RowDefinitions>
+            <Grid ColumnSpacing="4" Margin="8,0,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Text="消息" FontSize="21" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <Button x:Name="ManualButton" Grid.Column="1" Style="{StaticResource FeigeIconButtonStyle}" Click="OnManualClick"
+                    ToolTipService.ToolTip="手动连接设备" AutomationProperties.Name="手动连接设备">
+                    <FontIcon Glyph="&#xE710;" FontSize="16" />
+                </Button>
+                <Button x:Name="RefreshPeersButton" Grid.Column="2" Style="{StaticResource FeigeIconButtonStyle}" Click="OnRefreshClick"
+                    ToolTipService.ToolTip="刷新附近设备" AutomationProperties.Name="刷新附近设备">
+                    <Grid Width="18" Height="18">
+                        <FontIcon x:Name="RefreshPeersIcon" Glyph="&#xE72C;" FontSize="15" />
+                        <ProgressRing x:Name="RefreshPeersProgress" Width="18" Height="18" IsActive="False" Visibility="Collapsed"
+                            AutomationProperties.Name="正在刷新附近设备" />
+                    </Grid>
+                </Button>
+            </Grid>
+            <TextBlock x:Name="ConversationCount" Grid.Row="1" Text="会话" Margin="8,0,0,8" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Grid Grid.Row="2">
+                <ListView x:Name="ConversationList" AutomationProperties.Name="设备会话" SelectionChanged="OnConversationSelected" ContextRequested="OnConversationContextRequested" IsItemClickEnabled="True" ItemClick="OnConversationClick"
+                    HorizontalContentAlignment="Stretch" SelectionMode="Single" BorderThickness="0">
+
+                    <ListView.ItemContainerTransitions><TransitionCollection /></ListView.ItemContainerTransitions>
+                    <ListView.Resources>
+                        <ResourceDictionary>
+                            <ResourceDictionary.ThemeDictionaries>
+                                <ResourceDictionary x:Key="Light">
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#E8EFFF" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#DFE8FD" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedUnfocused" Color="#E8EFFF" />
+                                </ResourceDictionary>
+                                <ResourceDictionary x:Key="Default">
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#293D61" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#334B74" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedUnfocused" Color="#293D61" />
+                                </ResourceDictionary>
+                            </ResourceDictionary.ThemeDictionaries>
+                        </ResourceDictionary>
+                    </ListView.Resources>
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="Padding" Value="9,10" />
+                            <Setter Property="Margin" Value="0,0,0,4" />
+                            <Setter Property="CornerRadius" Value="8" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="svc:ConversationItem">
+                            <Grid ColumnSpacing="11" ToolTipService.ToolTip="{x:Bind State, Mode=OneWay}">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <Border Width="42" Height="42" VerticalAlignment="Top" CornerRadius="13" Background="{ThemeResource FeigeAvatarBrush}">
+                                    <TextBlock Text="{x:Bind AvatarText, Mode=OneWay}" FontSize="19" FontWeight="SemiBold" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <Grid Grid.Column="1" RowSpacing="4">
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                    <Grid ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind Name, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind LastActivityText, Mode=OneWay}" FontSize="10" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                    </Grid>
+                                    <TextBlock Grid.Row="1" Text="{x:Bind Summary, Mode=OneWay}" FontSize="12" MaxLines="1" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Grid>
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <StackPanel x:Name="ConversationsEmpty" Margin="16,12" Spacing="7" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
+                    <FontIcon Glyph="&#xE8F2;" FontSize="25" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="EmptyConversationsTitle" Text="还没有会话" FontSize="13" HorizontalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="EmptyConversationsDescription" Text="连接附近设备后，会话将显示在这里。" FontSize="11" TextWrapping="Wrap" TextAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                </StackPanel>
+            </Grid>
+            <StackPanel Grid.Row="3" Margin="8,16,0,8" Spacing="4">
+                <TextBlock x:Name="PeerCount" Text="附近设备" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="PeerRefreshStatus" FontSize="11" TextWrapping="Wrap" Visibility="Collapsed"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite" />
+            </StackPanel>
+            <Grid Grid.Row="4">
+                <ListView x:Name="PeerList" AutomationProperties.Name="附近设备" SelectionMode="None" HorizontalContentAlignment="Stretch" BorderThickness="0">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="Padding" Value="8,9" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="CornerRadius" Value="8" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="disc:DiscoveredPeer">
+                            <Grid ColumnSpacing="9">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="32" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Border Width="32" Height="32" CornerRadius="10" Background="{ThemeResource FeigeAvatarBrush}">
+                                    <FontIcon Glyph="&#xE7F4;" FontSize="16" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
+                                    <TextBlock Text="{x:Bind DisplayName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{x:Bind EndpointText}" FontSize="10" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                </StackPanel>
+                                <Button Grid.Column="2" Click="OnConnectClick" Style="{StaticResource FeigeIconButtonStyle}" Width="28" Height="30"
+                                    ToolTipService.ToolTip="请求连接此设备" AutomationProperties.Name="请求连接此设备">
+                                    <FontIcon Glyph="&#xE710;" FontSize="12" />
+                                </Button>
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <TextBlock x:Name="PeersEmpty" Text="请在另一台电脑打开飞鸽快传，并连接到同一局域网。可刷新设备、用 + 手动连接，或查看连接帮助。" TextWrapping="Wrap" Margin="8,8" FontSize="11"
+                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Top" IsHitTestVisible="False" />
+            </Grid>
+
+        </Grid>
+        <Grid x:Name="ChatPane" Grid.Row="1" Grid.Column="1" Background="{ThemeResource FeigeChatBrush}" AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <Border BorderBrush="{ThemeResource FeigeDividerBrush}" BorderThickness="0,0,0,1" Background="{ThemeResource FeigePanelBrush}" Padding="20,14">
+                <Grid ColumnSpacing="12" MinHeight="43">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <Button x:Name="ConversationsBackButton" Visibility="Collapsed" Style="{StaticResource FeigeIconButtonStyle}" Click="OnConversationsBackClick"
+                        AutomationProperties.Name="返回会话列表" ToolTipService.ToolTip="返回会话列表">
+                        <FontIcon Glyph="&#xE72B;" FontSize="15" />
+                    </Button>
+                    <Border Grid.Column="1" Width="40" Height="40" CornerRadius="13" Background="{ThemeResource FeigeAvatarBrush}">
+                        <TextBlock x:Name="PeerAvatar" Text="鸽" FontSize="20" FontWeight="SemiBold" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel Grid.Column="2" Spacing="4" VerticalAlignment="Center">
+                        <TextBlock x:Name="PeerTitle" Text="消息" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="ConnectionState" Text="选择设备，开始安全传输" FontSize="11" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <Button x:Name="DisconnectButton" Grid.Column="3" Content="断开连接" Click="OnDisconnectClick" IsEnabled="False" VerticalAlignment="Center"
+                        FontSize="12" Background="Transparent" BorderThickness="0" Padding="10,7" ToolTipService.ToolTip="断开当前连接或取消连接请求" />
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="2">
+                <ListView x:Name="MessageList" AutomationProperties.Name="聊天消息" SelectionMode="None" HorizontalContentAlignment="Stretch" Padding="20,14" BorderThickness="0">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="Margin" Value="0,0,0,16" />
+                            <Setter Property="IsTabStop" Value="False" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="svc:MessageItem">
+                            <StackPanel HorizontalAlignment="{x:Bind Alignment}" MaxWidth="560" Spacing="6">
+                                <TextBlock Text="{x:Bind Caption, Mode=OneWay}" FontSize="10" HorizontalAlignment="{x:Bind Alignment}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                <Border Style="{x:Bind BubbleStyle}">
+                                    <StackPanel Spacing="9">
+                                        <TextBlock Visibility="{x:Bind TextVisibility, Mode=OneWay}" Text="{x:Bind Body, Mode=OneWay}" TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="14" LineHeight="22" />
+                                        <StackPanel x:Name="AttachmentCard" Visibility="{x:Bind AttachmentVisibility, Mode=OneWay}" MinWidth="260" MaxWidth="340" Spacing="10">
+                                            <Grid ColumnSpacing="12">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                <Border Width="42" Height="46" CornerRadius="10" Background="{ThemeResource FeigePanelBrush}" VerticalAlignment="Top">
+                                                    <FontIcon Glyph="{x:Bind FileGlyph, Mode=OneWay}" FontSize="23" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                                                    <TextBlock x:Name="AttachmentName" Text="{x:Bind Body, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{x:Bind Body, Mode=OneWay}" IsTextSelectionEnabled="True" />
+                                                    <TextBlock x:Name="AttachmentMetaText" Text="{x:Bind AttachmentMetadata, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                </StackPanel>
+                                            </Grid>
+                                            <Button x:Name="InlineImagePreviewButton" x:Load="{x:Bind CanPreview, Mode=OneWay}" Click="OnPreviewAttachmentClick" Padding="0" BorderThickness="0" Background="Transparent" HorizontalAlignment="Left" AutomationProperties.Name="放大预览图片" ToolTipService.ToolTip="点击预览图片">
+                                                <Image x:Name="PreviewImage" MaxWidth="320" MaxHeight="220" Stretch="Uniform" HorizontalAlignment="Left" Loaded="OnImageLoaded" DataContextChanged="OnImageDataContextChanged" AutomationProperties.Name="图片预览" />
+                                            </Button>
+                                            <ProgressBar Visibility="{x:Bind ProgressVisibility, Mode=OneWay}" Value="{x:Bind Percent, Mode=OneWay}" Maximum="100" />
+                                            <TextBlock Text="{x:Bind RateText, Mode=OneWay}" Visibility="{x:Bind RateVisibility, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <StackPanel Visibility="{x:Bind IncomingDecisionVisibility, Mode=OneWay}" Orientation="Horizontal" Spacing="8">
+                                                <Button Content="接收" Click="OnAcceptIncomingFileClick" FontSize="12" Padding="10,5" />
+                                                <Button Content="拒绝" Click="OnDeclineIncomingFileClick" FontSize="12" Padding="10,5" />
+                                            </StackPanel>
+                                            <Border BorderBrush="{ThemeResource FeigeDividerBrush}" BorderThickness="0,1,0,0" Padding="0,8,0,0">
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                    <Grid ColumnSpacing="5" VerticalAlignment="Center">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                        <FontIcon x:Name="CompletionIcon" Visibility="{x:Bind CompletionVisibility, Mode=OneWay}" Glyph="&#xE73E;" FontSize="11" Foreground="{ThemeResource FeigeSuccessBrush}" VerticalAlignment="Top" Margin="0,3,0,0" AutomationProperties.Name="传输完成" />
+                                                        <TextBlock x:Name="AttachmentStatus" Grid.Column="1" Text="{x:Bind Status, Mode=OneWay}" FontSize="11" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                    </Grid>
+                                                    <StackPanel Grid.Column="1" Visibility="{x:Bind AttachmentActionsVisibility, Mode=OneWay}" Orientation="Horizontal" Spacing="8">
+                                                        <HyperlinkButton x:Name="PreviewAttachmentButton" Content="预览" Visibility="{x:Bind PreviewActionVisibility, Mode=OneWay}" Click="OnPreviewAttachmentClick" FontSize="12" Padding="2,3" MinWidth="0" MinHeight="28" />
+                                                        <HyperlinkButton x:Name="OpenAttachmentButton" Content="{x:Bind OpenLabel, Mode=OneWay}" Click="OnOpenFileClick" FontSize="12" Padding="2,3" MinWidth="0" MinHeight="28" />
+                                                        <HyperlinkButton x:Name="RevealAttachmentButton" Content="显示位置" Click="OnRevealFileClick" FontSize="12" Padding="2,3" MinWidth="0" MinHeight="28" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </StackPanel>
+                                        <Button Content="重试" Visibility="{x:Bind RetryVisibility, Mode=OneWay}" Click="OnRetryClick" FontSize="12" Padding="9,5" HorizontalAlignment="Left" />
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock Visibility="{x:Bind TextVisibility, Mode=OneWay}" Text="{x:Bind Status, Mode=OneWay}" FontSize="10" HorizontalAlignment="{x:Bind Alignment}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <StackPanel x:Name="ChatEmpty" Spacing="12" MaxWidth="300" Margin="24" VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <Image Source="ms-appx:///Assets/Square150x150Logo.png" Width="64" Height="64" />
+                    <TextBlock x:Name="EmptyTitle" Text="让传输像聊天一样简单" FontSize="20" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap" />
+                    <TextBlock x:Name="EmptyDescription" Text="从附近设备发起连接，轻松互传文字、图片和文件。" FontSize="13" TextWrapping="Wrap" TextAlignment="Center" LineHeight="21" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <Button x:Name="ConnectionHelpButton" Content="连接帮助" Click="OnConnectionHelpClick" HorizontalAlignment="Center" />
+                    <TextBlock Text="同一局域网 · 连接需对方同意" FontSize="11" TextAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                </StackPanel>
+            </Grid>
+            <Grid Grid.Row="3" Margin="20,0,20,16" RowSpacing="7">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <Border Background="{ThemeResource FeigePanelBrush}" BorderBrush="{ThemeResource FeigeDividerBrush}" BorderThickness="1" CornerRadius="12" Padding="8">
+                    <Grid RowSpacing="4">
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <TextBox x:Name="Composer" AutomationProperties.Name="消息输入" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="58" MaxHeight="132" PlaceholderText="连接设备后，在这里输入消息…"
+                            IsEnabled="False" TextChanged="OnDraftChanged" KeyDown="OnComposerKeyDown" BorderThickness="0" Background="Transparent" Padding="7,5" FontSize="14">
+                            <TextBox.Resources>
+                                <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
+                                <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
+                                <SolidColorBrush x:Key="TextControlBackgroundDisabled" Color="Transparent" />
+                                <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
+                            </TextBox.Resources>
+                        </TextBox>
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <StackPanel Orientation="Horizontal" Spacing="2">
+                                <Button x:Name="EmojiButton" AutomationProperties.Name="插入表情" Click="OnEmojiPickerClick" IsEnabled="False" Background="Transparent" BorderThickness="0" Padding="8,6" ToolTipService.ToolTip="插入表情">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="6"><TextBlock Text="😊" FontSize="16" VerticalAlignment="Center" Margin="0,0,0,1" /><TextBlock Text="表情" FontSize="12" VerticalAlignment="Center" /></StackPanel>
+                                </Button>
+                                <Button x:Name="ImagesButton" AutomationProperties.Name="发送图片" Click="OnImagesClick" IsEnabled="False" Background="Transparent" BorderThickness="0" Padding="8,6" ToolTipService.ToolTip="发送图片">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="6"><FontIcon Glyph="&#xEB9F;" FontSize="15" VerticalAlignment="Center" /><TextBlock Text="图片" FontSize="12" VerticalAlignment="Center" /></StackPanel>
+                                </Button>
+                                <Button x:Name="FilesButton" AutomationProperties.Name="发送文件" Click="OnFilesClick" IsEnabled="False" Background="Transparent" BorderThickness="0" Padding="8,6" ToolTipService.ToolTip="发送文件">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="6"><FontIcon Glyph="&#xE8B7;" FontSize="15" VerticalAlignment="Center" /><TextBlock Text="文件" FontSize="12" VerticalAlignment="Center" /></StackPanel>
+                                </Button>
+                            </StackPanel>
+                            <Button x:Name="SendButton" AutomationProperties.Name="发送消息" Grid.Column="1" Click="OnSendTextClick" Style="{StaticResource AccentButtonStyle}" IsEnabled="False" Padding="14,6" CornerRadius="7" ToolTipService.ToolTip="发送消息（Enter）">
+                                <StackPanel Orientation="Horizontal" Spacing="7"><TextBlock Text="发送" FontSize="12" /><FontIcon Glyph="&#xE724;" FontSize="13" /></StackPanel>
+                            </Button>
+                        </Grid>
+                    </Grid>
+                </Border>
+                <TextBlock x:Name="ComposerHint" Grid.Row="1" Text="Enter 发送 · Shift+Enter 换行 · 支持拖入本地文件" FontSize="10" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            </Grid>
+        </Grid>
+    </Grid>
+</Page>

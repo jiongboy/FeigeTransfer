@@ -25,8 +25,18 @@ try
     }
     if (args.Length == 3 && args[0] == "verify")
     {
-        var source = ReadSource(args[1]);
-        var manifest = UpdateManifest.Verify(File.ReadAllBytes(args[2]), source);
+        // Accept either the multi-origin configuration or a single origin: each configured origin
+        // gets its own manifest, because download URLs are bound to the origin that served them.
+        var sources = ReadSources(args[1]);
+        var bytes = File.ReadAllBytes(args[2]);
+        UpdateManifest? manifest = null;
+        Exception? last = null;
+        foreach (var source in sources)
+        {
+            try { manifest = UpdateManifest.Verify(bytes, source); break; }
+            catch (InvalidDataException ex) { last = ex; }
+        }
+        if (manifest is null) throw last ?? new InvalidDataException("更新清单与任何配置来源都不匹配。");
         Console.WriteLine(JsonSerializer.Serialize(new { releases = manifest.Releases }, UpdateManifest.Json));
         return 0;
     }
@@ -51,8 +61,9 @@ try
         string builds = Path.Combine(root, "Windows", "dist", "build") + Path.DirectorySeparatorChar;
         if (!File.Exists(Path.Combine(root, "AGENTS.md")) || !output.StartsWith(builds, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("清单输出必须位于 Windows/dist/build 中。");
-        var source = ReadSource(sourcePath);
-        if (!source.PublicKeys.ContainsKey(keyId)) throw new InvalidDataException("签名公钥标识尚未配置到客户端。");
+        var sources = ReadSources(sourcePath);
+        var source = sources.FirstOrDefault(s => s.PublicKeys.ContainsKey(keyId))
+            ?? throw new InvalidDataException("签名公钥标识尚未配置到客户端。");
         byte[] payload = File.ReadAllBytes(input);
         if (payload.Length > UpdateManifest.MaximumPayloadBytes) throw new InvalidDataException("发布记录过大。");
         using var rsa = keyFilePath is null ? OpenCngKey(keyName) : OpenPkcs8Key(keyFilePath);
@@ -119,9 +130,21 @@ static RSA OpenPkcs8Key(string path)
     }
 }
 
-static UpdateSource ReadSource(string path)
+static IReadOnlyList<UpdateSource> ReadSources(string path)
 {
     // File.ReadAllText handles a UTF-8 BOM written by Windows PowerShell.
-    var source = JsonSerializer.Deserialize<UpdateSource>(File.ReadAllText(path), UpdateManifest.Json) ?? throw new InvalidDataException("更新来源为空。");
-    source.Validate(); return source;
+    string json = File.ReadAllText(path);
+    try
+    {
+        var sources = JsonSerializer.Deserialize<UpdateSources>(json, UpdateManifest.Json) ?? throw new InvalidDataException("更新来源为空。");
+        sources.Validate();
+        return sources.Resolve();
+    }
+    catch (JsonException)
+    {
+        // Fall back to a legacy single-origin file.
+        var source = JsonSerializer.Deserialize<UpdateSource>(json, UpdateManifest.Json) ?? throw new InvalidDataException("更新来源为空。");
+        source.Validate();
+        return [source.Normalize()];
+    }
 }

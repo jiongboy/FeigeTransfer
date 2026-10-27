@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Feige.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Feige.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

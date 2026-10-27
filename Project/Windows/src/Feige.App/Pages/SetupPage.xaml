@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page x:Class="Feige.App.Pages.SetupPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Background="{ThemeResource FeigePanelBrush}" Padding="20,12">
+        <Grid MaxWidth="620" HorizontalAlignment="Stretch" RowSpacing="12">
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <TextBlock x:Name="StepText" Text="1/2 本机设置" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <ScrollViewer x:Name="SetupScroller" Grid.Row="1" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+                <StackPanel Spacing="18" Padding="0,8,8,12">
+                    <StackPanel Spacing="12">
+                        <Image Source="ms-appx:///Assets/Square150x150Logo.png" Width="64" Height="64" HorizontalAlignment="Left" />
+                        <TextBlock x:Name="Heading" Text="欢迎使用飞鸽快传" FontSize="28" FontWeight="SemiBold" TextWrapping="Wrap" />
+                        <TextBlock x:Name="Introduction" Text="同一局域网内，轻松互传文字、图片和文件。无需注册，对方同意连接后即可开始。" FontSize="14" LineHeight="22" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <StackPanel x:Name="LocalSettingsPanel" Spacing="16">
+                        <StackPanel Spacing="7">
+                            <TextBox x:Name="SetupNameBox" Header="设备名称" MaxLength="48" AutomationProperties.Name="设备名称" />
+                            <TextBlock Text="同一局域网中的设备会看到这个名称。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <InfoBar x:Name="SetupNameError" IsOpen="False" IsClosable="False" Severity="Error" />
+                        </StackPanel>
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="接收位置" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SetupFolderText" FontSize="13" TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True" AutomationProperties.Name="接收文件夹路径" />
+                            <Button x:Name="SetupChangeFolderButton" Content="更改…" Click="OnChangeFolderClick" AutomationProperties.Name="更改接收文件夹" />
+                            <TextBlock Text="收到的文件保存在这里，同名文件不会被覆盖。以后可在设置中更改。继续时会检查文件夹能否创建和保存文件，系统可能询问目录访问权限。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <InfoBar x:Name="SetupFolderError" IsOpen="False" IsClosable="False" Severity="Error" />
+                        </StackPanel>
+                        <StackPanel Spacing="6">
+                            <ToggleSwitch x:Name="SetupUpdatesSwitch" Header="自动检查更新" OnContent="开启" OffContent="关闭" IsOn="True" />
+                            <TextBlock Text="会联网获取版本信息，下载和安装前会询问。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="当前更新服务尚未接入，此偏好将保留并在接入后生效。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel x:Name="ConnectionPanel" Spacing="14" Visibility="Collapsed">
+                        <Border Style="{StaticResource FeigeSectionCardStyle}">
+                            <StackPanel Spacing="14">
+                                <TextBlock x:Name="IdentityStateText" Text="本机身份：等待准备" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                <TextBlock x:Name="FolderStateText" Text="接收位置：等待检查" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                                <TextBlock x:Name="NetworkStateText" Text="局域网连接：等待身份准备" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                            </StackPanel>
+                        </Border>
+                        <ProgressRing x:Name="SetupBusyRing" Width="24" Height="24" IsActive="False" HorizontalAlignment="Left" AutomationProperties.Name="正在准备连接" />
+                        <TextBlock Text="Windows 可能询问是否允许其他设备连接此应用，请按你信任的网络环境选择。若受单位策略限制，可能需要管理员协助。无需关闭防火墙。" FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="没有发现其他设备也可以开始使用。请在另一台电脑打开飞鸽快传，并连接到同一局域网。" FontSize="13" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <Button x:Name="SetupNetworkHelpButton" Content="打开连接设置指引" Click="OnConnectionHelpClick" />
+                    </StackPanel>
+                    <InfoBar x:Name="SetupErrorBar" IsOpen="False" IsClosable="False" Severity="Error" />
+                </StackPanel>
+            </ScrollViewer>
+            <Grid Grid.Row="2" ColumnSpacing="8" Padding="0,6,0,2">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <Button x:Name="SetupBackButton" Content="上一步" Click="OnBackClick" Visibility="Collapsed" />
+                <Button x:Name="SetupLaterButton" Grid.Column="1" Content="稍后设置" Click="OnLaterClick" Visibility="Collapsed" HorizontalAlignment="Right" />
+                <Button x:Name="SetupPrimaryButton" Grid.Column="2" Content="保存并继续" Click="OnPrimaryClick" Style="{StaticResource AccentButtonStyle}" />
+            </Grid>
+        </Grid>
+    </Grid>
+</Page>

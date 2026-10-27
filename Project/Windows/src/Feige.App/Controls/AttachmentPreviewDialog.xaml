@@ -1,0 +1,53 @@
+<ContentDialog x:Class="Feige.App.Controls.AttachmentPreviewDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    PrimaryButtonText="打开文件" CloseButtonText="关闭" DefaultButton="Close"
+    PrimaryButtonClick="OnOpenFileClick" Opened="OnOpened" Closed="OnClosed">
+    <ContentDialog.Resources><x:Double x:Key="ContentDialogMaxWidth">1100</x:Double></ContentDialog.Resources>
+    <ContentDialog.Title><TextBlock x:Name="FileTitle" FontSize="20" FontWeight="SemiBold" MaxLines="1" TextTrimming="CharacterEllipsis" /></ContentDialog.Title>
+    <Grid x:Name="PreviewLayout" RowSpacing="10">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <Grid ColumnSpacing="8">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <TextBlock x:Name="FormatText" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                <Button x:Name="CopyPreviewButton" Content="复制文本" Click="OnCopyClick" FontSize="12" Visibility="Collapsed" />
+                <ToggleButton x:Name="WrapPreviewButton" Content="自动换行" Click="OnWrapClick" FontSize="12" Visibility="Collapsed" />
+            </StackPanel>
+        </Grid>
+        <InfoBar x:Name="PreviewNotice" Grid.Row="1" IsOpen="False" IsClosable="False" Severity="Informational" />
+        <Border Grid.Row="2" Background="{ThemeResource FeigeChatBrush}" BorderBrush="{ThemeResource FeigeDividerBrush}" BorderThickness="1" CornerRadius="8">
+            <Grid>
+                <ScrollViewer x:Name="TextScroller" Visibility="Collapsed" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="16" HorizontalContentAlignment="Left">
+                    <Grid ColumnSpacing="14">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <TextBlock x:Name="LineNumbers" FontFamily="Consolas" FontSize="13" LineHeight="21" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextAlignment="Right" IsHitTestVisible="False" />
+                        <RichTextBlock x:Name="PreviewText" Grid.Column="1" FontFamily="Consolas" FontSize="13" LineHeight="21" TextWrapping="NoWrap" IsTextSelectionEnabled="True" AutomationProperties.Name="文件预览正文" />
+                    </Grid>
+                </ScrollViewer>
+                <ScrollViewer x:Name="VisualScroller" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" SizeChanged="OnVisualSizeChanged" Visibility="Collapsed" ZoomMode="Enabled" MinZoomFactor="0.25" MaxZoomFactor="4" HorizontalScrollMode="Enabled" VerticalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <Image x:Name="DocumentImage" HorizontalAlignment="Center" VerticalAlignment="Center" Stretch="Uniform" AutomationProperties.Name="文档或图片预览" />
+                </ScrollViewer>
+                <ProgressRing x:Name="PreviewLoading" IsActive="True" Width="32" Height="32" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <StackPanel x:Name="PreviewErrorPanel" Visibility="Collapsed" Spacing="10" Margin="24" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <FontIcon Glyph="&#xE8A5;" FontSize="32" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="PreviewErrorText" TextWrapping="Wrap" TextAlignment="Center" MaxWidth="380" FontSize="14" />
+                    <TextBlock Text="可使用下方“打开文件”交给外部应用查看。" TextWrapping="Wrap" TextAlignment="Center" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+        <Grid Grid.Row="3" x:Name="VisualToolbar" Visibility="Collapsed" ColumnSpacing="10">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel x:Name="PdfNavigation" Orientation="Horizontal" Spacing="8" Visibility="Collapsed" VerticalAlignment="Center">
+                <Button x:Name="PreviousPageButton" Content="上一页" Click="OnPreviousPageClick" FontSize="12" />
+                <TextBlock x:Name="PdfPageText" FontSize="12" VerticalAlignment="Center" />
+                <Button x:Name="NextPageButton" Content="下一页" Click="OnNextPageClick" FontSize="12" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                <Button x:Name="ZoomOutButton" Content="−" Click="OnZoomOutClick" AutomationProperties.Name="缩小预览" />
+                <Button x:Name="FitPreviewButton" Content="适合窗口" Click="OnFitClick" FontSize="12" />
+                <Button x:Name="ZoomInButton" Content="+" Click="OnZoomInClick" AutomationProperties.Name="放大预览" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</ContentDialog>

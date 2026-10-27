@@ -11,13 +11,23 @@ AppPackages/
 .DerivedData/
 DerivedData/
 
+# macOS bundles are output only, but git ignores case, so *.app would also hide the Windows
+# source directory src/Feige.App. Re-include traceable source files, then re-apply build output
+# rules below so bin/obj caches still stay out of the repository.
+*.app/
+*.dmg
+!Project/**
+Project/**/bin/
+Project/**/obj/
+Project/**/.build/
+Project/**/.swiftpm/
+Project/**/.DS_Store
+
 # macOS build outputs and local IDE state
 **/.DS_Store
 **/.xcuserstate
 **/xcuserdata/
 **/DerivedData/
-*.app/
-*.dmg
 
 # Windows local IDE state and packages
 .vs/

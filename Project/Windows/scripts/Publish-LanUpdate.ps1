@@ -40,10 +40,15 @@ $builds = [IO.Path]::GetFullPath((Join-Path $windowsRoot 'dist\build')) + [IO.Pa
 $manifest = [IO.Path]::GetFullPath($ManifestPath)
 if (!$manifest.StartsWith($builds, [StringComparison]::OrdinalIgnoreCase)) { throw 'Manifest must be under Windows/dist/build.' }
 if ($source.publisherCertificateSha256.Count -eq 0) { throw 'Expected Authenticode publisher certificates are not configured.' }
-$configuredOrigin = [Uri]$source.baseUri
+# The configuration lists ordered origins; LAN publishing always uses the "lan" entry.
+$lanEntries = @($source.sources | Where-Object { $_.label -eq 'lan' })
+if ($lanEntries.Count -ne 1) { throw 'UpdateSource.json must contain exactly one LAN origin labelled lan.' }
+$lanSource = $lanEntries[0]
+$lanHosts = if ($lanSource.hosts) { @($lanSource.hosts) } else { @($lanSource.trustedHosts) }
+$configuredOrigin = [Uri]$lanSource.baseUri
 if ($configuredOrigin.AbsolutePath.TrimEnd('/') -ne '/updates' -or $configuredOrigin.Host -ne '192.168.50.229' -or
-    $configuredOrigin.Port -ne 8080 -or $configuredOrigin.Scheme -ne 'http' -or !$source.allowInsecurePrivateNetwork -or
-    $source.trustedHosts -notcontains '192.168.50.229') {
+    $configuredOrigin.Port -ne 8080 -or $configuredOrigin.Scheme -ne 'http' -or !$lanSource.allowInsecurePrivateNetwork -or
+    $lanHosts -notcontains '192.168.50.229') {
     throw 'LAN update source does not match the explicitly configured Mac mini origin.'
 }
 $toolDirectory = Join-Path $windowsRoot 'dist\update-tool'
@@ -57,7 +62,7 @@ $releases = @(($verified | ConvertFrom-Json).releases)
 if (!$releases.Count) { throw 'No release assets.' }
 . (Join-Path $windowsRoot 'src\Feige.App\Updates\VerifyPinnedAuthenticode.ps1')
 
-$releaseRoot = [Uri]::new(([string]$source.baseUri).TrimEnd('/') + '/')
+$releaseRoot = [Uri]::new(([string]$lanSource.baseUri).TrimEnd('/') + '/')
 $expectedVersionPrefix = "/updates/windows/$($source.channel)/versions/"
 $tags = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $releaseVersions = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -113,7 +118,7 @@ $pointerPath = "$remoteBase/feige-windows-update.json"
 $pointerBackup = "$remoteBase/feige-windows-update.previous.json"
 # Windows PowerShell binds Uri(string, string) to the wrong overload (returns the base
 # alone), so always pass a real Uri as the base.
-$destination = ([Uri]::new([Uri](([string]$source.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/feige-windows-update.json")).AbsoluteUri
+$destination = ([Uri]::new([Uri](([string]$lanSource.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/feige-windows-update.json")).AbsoluteUri
 
 if ($dryRun) {
     Write-Output "WhatIf: validated $tag and would promote $destination"

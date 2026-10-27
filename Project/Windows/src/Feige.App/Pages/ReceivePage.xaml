@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page x:Class="Feige.App.Pages.ReceivePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:svc="using:Feige.App.Services">
+    <ScrollViewer x:Name="HistoryScroller" HorizontalContentAlignment="Stretch" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Width="{Binding ViewportWidth, ElementName=HistoryScroller}" Padding="28" Spacing="18" MaxWidth="1100" HorizontalAlignment="Left">
+            <StackPanel Spacing="6" Margin="0,0,0,6">
+                <TextBlock Text="传输记录" FontSize="26" FontWeight="SemiBold" />
+                <TextBlock Text="查看已发送和接收的文件，快速找到保存位置。" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+            </StackPanel>
+            <Border Style="{StaticResource FeigeSectionCardStyle}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="接收文件夹" FontSize="15" FontWeight="SemiBold" />
+                    <TextBlock x:Name="FolderText" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Click="OnOpenFolderClick" Content="打开文件夹" />
+                        <Button Click="OnChangeFolderClick" Content="更改位置" Background="Transparent" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+            <StackPanel x:Name="ProgressPanel" Spacing="8" Visibility="Collapsed">
+                <TextBlock x:Name="ProgressText" FontSize="12" TextWrapping="Wrap" />
+                <ProgressBar x:Name="ProgressBarControl" Maximum="100" />
+            </StackPanel>
+            <Grid ColumnSpacing="12" Margin="0,4,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <ComboBox x:Name="DirectionBox" SelectedIndex="0" SelectionChanged="OnDirectionChanged" MinWidth="140">
+                    <ComboBoxItem Content="接收记录" /><ComboBoxItem Content="发送记录" />
+                </ComboBox>
+                <Button x:Name="ClearHistoryButton" Grid.Column="1" Click="OnClearHistoryClick" Content="清空记录" Background="Transparent" />
+            </Grid>
+            <ListView x:Name="ReceivedList" SelectionMode="None" HorizontalContentAlignment="Stretch">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem"><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Padding" Value="8,12" /></Style>
+                </ListView.ItemContainerStyle>
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="svc:ReceivedItem">
+                        <Grid ColumnSpacing="14">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="40" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <Border Background="{ThemeResource FeigeAvatarBrush}" CornerRadius="10" Width="40" Height="40" VerticalAlignment="Top">
+                                <FontIcon Glyph="&#xE8A5;" FontSize="20" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="5">
+                                <TextBlock FontWeight="SemiBold" FontSize="14" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{x:Bind Detail}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Text="{x:Bind Path}" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                            <Button Grid.Column="2" Click="OnOpenFileClick" Content="打开" VerticalAlignment="Center" />
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+            <Border x:Name="EmptyHistoryPanel" Background="{ThemeResource FeigeChatBrush}" CornerRadius="10" Padding="24,32">
+                <TextBlock x:Name="EmptyHint" Text="还没有收到文件。记录保存在本机，重启后仍可查看。" TextWrapping="Wrap" TextAlignment="Center" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </Border>
+            <Expander Header="本机连接信息" HorizontalAlignment="Stretch">
+                <StackPanel Spacing="8">
+                    <TextBlock x:Name="StateText" FontSize="13" FontWeight="SemiBold" Text="正在启动…" />
+                    <TextBlock x:Name="EndpointText" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="FingerprintText" FontFamily="Consolas" FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                </StackPanel>
+            </Expander>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

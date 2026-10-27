@@ -22,17 +22,19 @@ string downloadDir = args.Length > 3 ? Path.GetFullPath(args[3]) : Path.Combine(
 byte[] sourceBytes = File.ReadAllBytes(sourcePath);
 if (sourceBytes.Length >= 3 && sourceBytes[0] == 0xEF && sourceBytes[1] == 0xBB && sourceBytes[2] == 0xBF)
     sourceBytes = sourceBytes[3..];
-var source = JsonSerializer.Deserialize<UpdateSource>(sourceBytes, UpdateManifest.Json)
+// The probe exercises the same ordered-source fallback the app uses.
+var sources = JsonSerializer.Deserialize<UpdateSources>(sourceBytes, UpdateManifest.Json)
     ?? throw new InvalidDataException("source config empty");
-source.Validate();
-Console.WriteLine($"source: {source.BaseUri} channel={source.Channel}");
+sources.Validate();
+Console.WriteLine($"sources: {string.Join(", ", sources.Sources.Select(s => s.Label ?? s.BaseUri))} channel={sources.Channel}");
 
-using var client = new UpdateClient(source);
-var manifest = await client.CheckAsync();
+using var client = new UpdateClient(sources);
+var check = await client.CheckAsync(new UpdateTarget("x64", sources.Channel, "exe", targetVersion, targetBuild, Environment.OSVersion.Version));
+var manifest = check.Manifest;
+Console.WriteLine($"source: {check.Source.Id} {check.Source.BaseUri}");
 Console.WriteLine($"manifest: {manifest.Releases.Count} release(s)");
 
-var target = new UpdateTarget("x64", source.Channel, "exe", targetVersion, targetBuild, Environment.OSVersion.Version);
-var selection = manifest.Select(target, 0);
+var selection = check.Selection;
 Console.WriteLine($"selection: {selection.Kind} build={selection.Release?.Build} version={selection.Release?.Version}");
 if (selection.Kind != UpdateCheckKind.Available)
 {
@@ -41,7 +43,7 @@ if (selection.Kind != UpdateCheckKind.Available)
 }
 
 Directory.CreateDirectory(downloadDir);
-var verifier = new PinnedAuthenticodeVerifier(Path.Combine(AppContext.BaseDirectory, "VerifyPinnedAuthenticode.ps1"), source.PublisherCertificateSha256);
+var verifier = new PinnedAuthenticodeVerifier(Path.Combine(AppContext.BaseDirectory, "VerifyPinnedAuthenticode.ps1"), sources.PublisherCertificateSha256);
 var package = await client.DownloadAsync(selection.Release!, downloadDir, verifier, new Progress<UpdateDownloadProgress>(p => { }));
 var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(package.Path)));
 Console.WriteLine($"downloaded: {package.Path}");

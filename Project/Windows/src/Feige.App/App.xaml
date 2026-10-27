@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application x:Class="Feige.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="FeigeShellBrush" Color="#EFF0F3" />
+                    <SolidColorBrush x:Key="FeigePanelBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="FeigeChatBrush" Color="#FAFBFD" />
+                    <SolidColorBrush x:Key="FeigeDividerBrush" Color="#E6E9EF" />
+                    <SolidColorBrush x:Key="FeigeSelectionBrush" Color="#E8EFFF" />
+                    <SolidColorBrush x:Key="FeigeReceivedBubbleBrush" Color="#F0F2F5" />
+                    <SolidColorBrush x:Key="FeigeSentBubbleBrush" Color="#E6EEFF" />
+                    <SolidColorBrush x:Key="FeigeAvatarBrush" Color="#EAF0FF" />
+                    <SolidColorBrush x:Key="FeigeAvatarForegroundBrush" Color="#4469BD" />
+                    <SolidColorBrush x:Key="FeigeSuccessBrush" Color="#23834B" />
+                    <SolidColorBrush x:Key="FeigeCodeKeywordBrush" Color="#285BBB" />
+                    <SolidColorBrush x:Key="FeigeCodeStringBrush" Color="#237C3E" />
+                    <SolidColorBrush x:Key="FeigeCodeCommentBrush" Color="#717986" />
+                    <SolidColorBrush x:Key="FeigeCodeNumberBrush" Color="#A94A05" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Default">
+                    <SolidColorBrush x:Key="FeigeShellBrush" Color="#1B1D22" />
+                    <SolidColorBrush x:Key="FeigePanelBrush" Color="#24272E" />
+                    <SolidColorBrush x:Key="FeigeChatBrush" Color="#202329" />
+                    <SolidColorBrush x:Key="FeigeDividerBrush" Color="#363A44" />
+                    <SolidColorBrush x:Key="FeigeSelectionBrush" Color="#293D61" />
+                    <SolidColorBrush x:Key="FeigeReceivedBubbleBrush" Color="#30343D" />
+                    <SolidColorBrush x:Key="FeigeSentBubbleBrush" Color="#293F66" />
+                    <SolidColorBrush x:Key="FeigeAvatarBrush" Color="#2F3D59" />
+                    <SolidColorBrush x:Key="FeigeAvatarForegroundBrush" Color="#B4CBFF" />
+                    <SolidColorBrush x:Key="FeigeSuccessBrush" Color="#79D9A1" />
+                    <SolidColorBrush x:Key="FeigeCodeKeywordBrush" Color="#8AB4FF" />
+                    <SolidColorBrush x:Key="FeigeCodeStringBrush" Color="#A5D893" />
+                    <SolidColorBrush x:Key="FeigeCodeCommentBrush" Color="#929EAE" />
+                    <SolidColorBrush x:Key="FeigeCodeNumberBrush" Color="#F1BB7F" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="FeigeShellBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="FeigePanelBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="FeigeChatBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="FeigeDividerBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="FeigeSelectionBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="FeigeReceivedBubbleBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="FeigeSentBubbleBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="FeigeAvatarBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="FeigeAvatarForegroundBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="FeigeSuccessBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="FeigeCodeKeywordBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="FeigeCodeStringBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="FeigeCodeCommentBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="FeigeCodeNumberBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+            <Style x:Key="FeigeIconButtonStyle" TargetType="Button">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Width" Value="34" />
+                <Setter Property="Height" Value="34" />
+                <Setter Property="Padding" Value="8" />
+                <Setter Property="CornerRadius" Value="7" />
+            </Style>
+            <Style x:Key="FeigeSectionCardStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource FeigeChatBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource FeigeDividerBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Padding" Value="20" />
+            </Style>
+            <Style x:Key="FeigeReceivedBubbleStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource FeigeReceivedBubbleBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource FeigeDividerBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="4,12,12,12" />
+                <Setter Property="Padding" Value="14,11" />
+            </Style>
+            <Style x:Key="FeigeSentBubbleStyle" TargetType="Border" BasedOn="{StaticResource FeigeReceivedBubbleStyle}">
+                <Setter Property="Background" Value="{ThemeResource FeigeSentBubbleBrush}" />
+                <Setter Property="CornerRadius" Value="12,4,12,12" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

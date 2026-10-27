@@ -15,7 +15,17 @@ $windowsRoot = Join-Path $projectRoot 'Windows'
 # Builds are staged under the platform tree; verified delivery copies go to Release/.
 $builds = [IO.Path]::GetFullPath((Join-Path $windowsRoot 'dist\build')) + [IO.Path]::DirectorySeparatorChar
 $source = Get-Content (Join-Path $windowsRoot 'src\Feige.App\Updates\UpdateSource.json') -Raw | ConvertFrom-Json
-if (!$source.baseUri -or !$source.trustedHosts) { throw 'Configured update base URL and trusted hosts are required.' }
+function Get-LanSource([pscustomobject]$SourceConfig) {
+    # The configuration now lists ordered origins; LAN publishing always targets the "lan" entry.
+    $entries = @($SourceConfig.sources)
+    $lan = $entries | Where-Object { $_.label -eq 'lan' } | Select-Object -First 1
+    if (-not $lan) { $lan = $entries | Where-Object { $_.baseUri -match '^http://' } | Select-Object -First 1 }
+    if (-not $lan) { throw 'UpdateSource.json must configure a LAN origin.' }
+    $hosts = if ($lan.hosts) { @($lan.hosts) } else { @($lan.trustedHosts) }
+    if (-not $lan.baseUri -or !$hosts) { throw 'Configured update base URL and trusted hosts are required.' }
+    return [pscustomobject]@{ baseUri = $lan.baseUri; hosts = $hosts; allowInsecurePrivateNetwork = [bool]$lan.allowInsecurePrivateNetwork }
+}
+$lan = Get-LanSource $source
 if ($source.channel -notin @('stable', 'preview')) { throw 'Configured update channel is invalid.' }
 if ($MinimumSystemVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'MinimumSystemVersion must be four numeric parts.' }
 if ($Tag -in @('.', '..') -or $Tag -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid release tag.' }
@@ -66,8 +76,8 @@ foreach ($inputPath in $InstallerPath) {
         platform='windows'; architecture=$metadata.architecture; channel=$source.channel; installation='exe'
         version=$metadata.version; build=[long]$metadata.build; publishedAt=[DateTimeOffset]::UtcNow.ToString('o')
         minimumSystemVersion=$MinimumSystemVersion; summary=$summary
-        notesUrl=([Uri]::new([Uri]::new(([string]$source.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/notes")).AbsoluteUri
-        downloadUrl=([Uri]::new([Uri]::new(([string]$source.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/$name")).AbsoluteUri
+        notesUrl=([Uri]::new([Uri]::new(([string]$lan.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/notes")).AbsoluteUri
+        downloadUrl=([Uri]::new([Uri]::new(([string]$lan.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/$name")).AbsoluteUri
         size=(Get-Item -LiteralPath $file).Length; sha256=$hash; protocolVersion=3
     }
 }

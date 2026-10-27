@@ -10,24 +10,77 @@ public interface IUpdatePackageVerifier
 public sealed record UpdateDownloadProgress(long Received, long Total);
 public sealed record VerifiedUpdatePackage(string Path, UpdateRelease Release);
 
+/// <summary>Result of a successful check, including the origin that served the manifest.</summary>
+public sealed record UpdateCheckResult(UpdateManifest Manifest, UpdateSource Source, UpdateSelection Selection);
+
 /// <summary>Anonymous update downloads are independent of all LAN discovery and transfer sockets.</summary>
 public sealed class UpdateClient : IDisposable
 {
-    private readonly UpdateSource _source;
+    private readonly UpdateSources _sources;
+    private readonly IReadOnlyList<UpdateSource> _origins;
+    private UpdateSource? _active;
     private readonly HttpClient _http;
 
-    public UpdateClient(UpdateSource source, HttpMessageHandler? handler = null)
+    /// <summary>Creates a client that tries each configured origin in order until one answers.</summary>
+    public UpdateClient(UpdateSources sources, HttpMessageHandler? handler = null)
     {
-        _source = source;
-        _http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false, UseDefaultCredentials = false });
-        _http.Timeout = TimeSpan.FromSeconds(30);
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Feige-Update/1");
+        _sources = sources;
+        _origins = sources.Resolve();
+        _http = CreateHttp(handler);
     }
 
-    public async Task<UpdateManifest> CheckAsync(CancellationToken cancellationToken = default)
+    /// <summary>Creates a client bound to a single origin, kept for callers that already picked one.</summary>
+    public UpdateClient(UpdateSource source, HttpMessageHandler? handler = null)
+        : this(new UpdateSources(source.Channel, source.PublicKeys, source.PublisherCertificateSha256, [source]), handler) { }
+
+    private static HttpClient CreateHttp(HttpMessageHandler? handler)
     {
-        _source.Validate();
-        using var response = await GetAsync(_source.ManifestUri, cancellationToken);
+        var http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false, UseDefaultCredentials = false });
+        http.Timeout = TimeSpan.FromSeconds(30);
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("Feige-Update/1");
+        return http;
+    }
+
+    public IReadOnlyList<UpdateSource> Origins => _origins;
+    public UpdateSource? ActiveSource => _active;
+
+    /// <summary>
+    /// Tries each origin in order and returns the first signed manifest. Transport failures and missing
+    /// releases fall through to the next origin; a present but invalid manifest fails closed instead,
+    /// because silently falling back could hide a tampered or misconfigured release.
+    /// </summary>
+    public async Task<UpdateCheckResult> CheckAsync(UpdateTarget target, long highestSeen = 0,
+        CancellationToken cancellationToken = default)
+    {
+        _sources.Validate();
+        Exception? lastFallback = null;
+        foreach (var origin in _origins)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var manifest = await FetchManifestAsync(origin, cancellationToken);
+                _active = origin;
+                return new(manifest, origin, manifest.Select(target, highestSeen));
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+            {
+                if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested) throw;
+                lastFallback = ex;
+            }
+        }
+        _active = null;
+        throw lastFallback ?? new HttpRequestException("没有可用的更新来源。", null, HttpStatusCode.NotFound);
+    }
+
+    /// <summary>Fetch and verify one manifest from one origin without any fallback.</summary>
+    public async Task<UpdateManifest> CheckAsync(CancellationToken cancellationToken = default)
+        => await FetchManifestAsync(_origins[0], cancellationToken);
+
+    private async Task<UpdateManifest> FetchManifestAsync(UpdateSource source, CancellationToken cancellationToken)
+    {
+        source.Validate();
+        using var response = await GetAsync(source, source.ManifestUri, cancellationToken);
         if (response.Content.Headers.ContentLength > UpdateManifest.MaximumEnvelopeBytes)
             throw new InvalidDataException("更新清单超出大小限制。");
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -39,14 +92,15 @@ public sealed class UpdateClient : IDisposable
             if (bytes.Length + read > UpdateManifest.MaximumEnvelopeBytes) throw new InvalidDataException("更新清单超出大小限制。");
             bytes.Write(buffer, 0, read);
         }
-        return UpdateManifest.Verify(bytes.ToArray(), _source);
+        return UpdateManifest.Verify(bytes.ToArray(), source);
     }
 
     public async Task<VerifiedUpdatePackage> DownloadAsync(UpdateRelease release, string cacheDirectory,
         IUpdatePackageVerifier verifier, IProgress<UpdateDownloadProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        release.Validate(_source);
+        var source = _active ?? _origins[0];
+        release.Validate(source);
         ArgumentNullException.ThrowIfNull(verifier);
         Directory.CreateDirectory(cacheDirectory);
         string partial = Path.Combine(cacheDirectory, Guid.NewGuid().ToString("N") + ".partial");
@@ -54,7 +108,7 @@ public sealed class UpdateClient : IDisposable
         bool retained = false;
         try
         {
-            using var response = await GetAsync(new Uri(release.DownloadUrl), cancellationToken);
+            using var response = await GetAsync(source, new Uri(release.DownloadUrl), cancellationToken);
             if (response.Content.Headers.ContentLength is { } declared && declared != release.Size)
                 throw new InvalidDataException("更新包大小与发布信息不一致。");
             await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
@@ -90,12 +144,12 @@ public sealed class UpdateClient : IDisposable
         }
     }
 
-    private async Task<HttpResponseMessage> GetAsync(Uri uri, CancellationToken ct)
+    private async Task<HttpResponseMessage> GetAsync(UpdateSource source, Uri uri, CancellationToken ct)
     {
-        _source.RequireInitialUri(uri);
+        source.RequireInitialUri(uri);
         for (int redirects = 0; ; redirects++)
         {
-            _source.RequireRedirectUri(uri);
+            source.RequireRedirectUri(uri);
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if ((int)response.StatusCode is >= 300 and < 400)

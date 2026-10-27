@@ -1,0 +1,23 @@
+{
+  "channel": "stable",
+  "sources": [
+    {
+      "label": "lan",
+      "baseUri": "http://192.168.50.229:8080/updates",
+      "hosts": [ "192.168.50.229" ],
+      "allowInsecurePrivateNetwork": true
+    },
+    {
+      "label": "github",
+      "baseUri": "https://github.com/jiongboy/FeigeTransfer/releases/latest/download",
+      "hosts": [ "github.com" ],
+      "redirectHosts": [ "objects.githubusercontent.com", "release-assets.githubusercontent.com" ]
+    }
+  ],
+  "publicKeys": {
+    "feige-update-release-2026": "MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAoINMUKxRQQaWirjUShOxhvfSLK1fXSlpltiXN7zsJkYSy7doGTUgmj3v93iWu/Bxg3vdtaK30qO+IDUIvPNgpnH/0M+zQJY5qM7TsOWFI0M8mFn3btu+TFtVhNGFB3PsY3lvJAZuWb9CRHqAjJepZoYrVISbawSEs2D7H+PcX+sESCwEeb6NfFx1P+ItqSL5oo0/OR4JjDXUpkIZQfiGaMHUjE482R6Y6TxhGeLg1mUIwSKfsl/fB5LkLEYdqDERi8Kf1Ogg81hqmezQmSuRZRocitZlMckQcL09lul+koDkYH2K/iSFESbYk+Uuve2ANWZUk+zqMuHW1J164jDe1B+8T0+TO9PNN2j6wgAneK1w64NjKCCUT8sTl/Tqx09UEV+cGp+yguYRJ8ujY+ZwY859VrGNloeCSVGngD0iwcI/xw5Ho6P7u8CQHyl4FPsJwu8F/ZtgZKjbyGUlS2EyEPsFpt3zNzAOJry3A+0SEBtC8HAB8LZlLBjp2CIdYBbxAgMBAAE="
+  },
+  "publisherCertificateSha256": [
+    "7EAEAE46BCB1F5C38D0B5F81F69C283B9ECA910020EF2796C31ACC28F1C29B9C"
+  ]
+}
