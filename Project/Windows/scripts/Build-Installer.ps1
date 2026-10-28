@@ -115,10 +115,19 @@ New-Item $output -ItemType Directory -Force | Out-Null
 try {
     Write-Host "Publishing self-contained $rid / $Version"
     $platformName = if ($Platform -eq 'arm64') { 'ARM64' } else { 'x64' }
-    & $DotnetPath publish $project -c Release -r $rid --self-contained true `
+    # Call MSBuild directly: the CLI wrapper ignores the target-level publish properties this
+    # build depends on, and it can report success while copying into a different folder than
+    # -o asks for. The explicit target plus PublishDir, and the checks below, make a silent
+    # empty payload impossible.
+    & $DotnetPath msbuild $project -t:Publish "-p:PublishDir=$payload" `
+        '-p:Configuration=Release' "-p:RuntimeIdentifier=$rid" '-p:SelfContained=true' `
         "-p:Platform=$platformName" '-p:FeigeInstallerBuild=true' '-p:PublishReadyToRun=false' `
-        '-p:PublishTrimmed=false' "-p:Version=$Version" "-p:FeigeBuildNumber=$BuildNumber" -o $payload
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
+        '-p:PublishTrimmed=false' "-p:Version=$Version" "-p:FeigeBuildNumber=$BuildNumber" `
+        -nodeReuse:false -m:1 -v:minimal
+    if ($LASTEXITCODE -ne 0) { throw "dotnet msbuild -t:Publish failed: $LASTEXITCODE" }
+    if (-not (Test-Path (Join-Path $payload 'Feige.App.exe'))) {
+        throw "Publish produced no executable in $payload. PublishDir was probably overridden; check the publish profile and -p:PublishDir."
+    }
     foreach ($required in @('Feige.App.exe', 'coreclr.dll', 'Microsoft.UI.Xaml.dll', 'Feige.App.pri',
         'App.xbf', 'MainWindow.xbf', 'Pages\SendPage.xbf', 'Pages\ReceivePage.xbf', 'Pages\SettingsPage.xbf',
         'Pages\SetupPage.xbf', 'Controls\AttachmentPreviewDialog.xbf', 'Assets\AppIcon.ico')) {

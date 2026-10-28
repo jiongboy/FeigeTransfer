@@ -169,8 +169,11 @@ $packageRoot = Join-Path (Join-Path $repoRoot 'Release\Windows') $packageVersion
 
 Write-Step "Publishing $Platform / $Configuration"
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
-& dotnet publish $project `
-    -c $Configuration `
+# Build the package without signing it, so this script owns signing: it needs the certificate
+# to be resolved (or created) first, then signs and verifies the produced .msix. Asking MSBuild
+# to sign at the same time would need a store certificate and would make -SkipSign incoherent.
+& dotnet msbuild $project -t:Publish `
+    "-p:Configuration=$Configuration" `
     -p:Platform=$Platform `
     -p:AppxBundle=Never `
     -p:UapAppxPackageBuildMode=SideloadOnly `
@@ -179,7 +182,7 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
     "-p:AppxPackageDir=$packageRoot/"
 
 if ($LASTEXITCODE -ne 0) {
-    throw "dotnet publish failed with exit code $LASTEXITCODE."
+    throw "Publishing failed with exit code $LASTEXITCODE."
 }
 
 $msix = Get-ChildItem -Path $packageRoot -Filter "*.msix" -Recurse -ErrorAction SilentlyContinue |

@@ -36,6 +36,13 @@
     <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>false</PublishSingleFile>
+    <!-- `dotnet publish` loads Properties\PublishProfiles\win-<Platform>.pubxml because
+         PublishProfile is set above, and that profile pins PublishDir to
+         bin\<Configuration>\<TargetFramework>\<RuntimeIdentifier>\publish\. It therefore
+         overrides `dotnet publish -o` and `-p:PublishDir`, which makes the CLI report success
+         for a folder the installer never reads; clearing it inside an installer build (always
+         MSBuild-driven with an explicit publish target) keeps the profile for IDE publishes. -->
+    <PublishProfile></PublishProfile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -103,7 +110,13 @@
     <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
 
-  <Target Name="IncludeInstallerXamlResources" AfterTargets="ComputeFilesToPublish" Condition="'$(FeigeInstallerBuild)' == 'true'">
+  <!--
+    The compiled XAML index (.pri) and instruction files (.xbf) only exist in $(OutputPath); the
+    SDK does not add them to the publish item list on its own. Append them while that list is
+    still being computed. With AfterTargets="ComputeFilesToPublish" the items arrived after the
+    copy step, so the published app silently shipped without them.
+  -->
+  <Target Name="IncludeInstallerXamlResources" BeforeTargets="ComputeFilesToPublish" Condition="'$(FeigeInstallerBuild)' == 'true'">
     <ItemGroup>
       <ResolvedFileToPublish Include="$(OutputPath)$(AssemblyName).pri">
         <RelativePath>$(AssemblyName).pri</RelativePath>
