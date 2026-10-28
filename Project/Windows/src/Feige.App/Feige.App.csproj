@@ -38,10 +38,9 @@
     <PublishSingleFile>false</PublishSingleFile>
     <!-- `dotnet publish` loads Properties\PublishProfiles\win-<Platform>.pubxml because
          PublishProfile is set above, and that profile pins PublishDir to
-         bin\<Configuration>\<TargetFramework>\<RuntimeIdentifier>\publish\. It therefore
-         overrides `dotnet publish -o` and `-p:PublishDir`, which makes the CLI report success
-         for a folder the installer never reads; clearing it inside an installer build (always
-         MSBuild-driven with an explicit publish target) keeps the profile for IDE publishes. -->
+         bin\<Configuration>\<TargetFramework>\<RuntimeIdentifier>\publish\, overriding
+         `dotnet publish -o`. Clear it for installer builds (always MSBuild-driven with an
+         explicit PublishDir) and keep the profile for IDE publishes. -->
     <PublishProfile></PublishProfile>
   </PropertyGroup>
 

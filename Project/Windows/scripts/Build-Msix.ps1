@@ -178,6 +178,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "Restore failed with exit code $LASTEXITCODE."
 }
 
+# ReadyToRun stays off: this call passes no RuntimeIdentifier, and Feige.App.csproj enables
+# ReadyToRun for Release, so the publish would otherwise fail with NETSDK1094 ("no valid
+# runtime pack"). The single-project MSIX supplies the architecture itself.
 & dotnet msbuild $project -t:Publish `
     "-p:Configuration=$Configuration" `
     -p:Platform=$Platform `
@@ -185,6 +188,7 @@ if ($LASTEXITCODE -ne 0) {
     -p:UapAppxPackageBuildMode=SideloadOnly `
     -p:AppxPackageSigningEnabled=false `
     -p:GenerateAppxPackageOnBuild=true `
+    -p:PublishReadyToRun=false `
     "-p:AppxPackageDir=$packageRoot/"
 
 if ($LASTEXITCODE -ne 0) {
