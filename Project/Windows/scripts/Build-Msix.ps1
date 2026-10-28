@@ -172,6 +172,12 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 # Build the package without signing it, so this script owns signing: it needs the certificate
 # to be resolved (or created) first, then signs and verifies the produced .msix. Asking MSBuild
 # to sign at the same time would need a store certificate and would make -SkipSign incoherent.
+# `dotnet msbuild` skips the implicit restore that `dotnet publish` performs, so restore first.
+& dotnet restore $project -v:minimal
+if ($LASTEXITCODE -ne 0) {
+    throw "Restore failed with exit code $LASTEXITCODE."
+}
+
 & dotnet msbuild $project -t:Publish `
     "-p:Configuration=$Configuration" `
     -p:Platform=$Platform `
