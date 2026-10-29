@@ -19,9 +19,17 @@ struct AttachmentPreviewView: View {
     private var isImage: Bool { UTType(filenameExtension: fileExtension)?.conforms(to: .image) == true }
     private var isPDF: Bool { fileExtension == "pdf" }
     private var isDOCX: Bool { fileExtension == "docx" }
+    private static let codeExtensions: Set<String> = [
+        "swift", "cs", "fs", "c", "h", "cpp", "hpp", "m", "mm", "js", "jsx", "mjs", "cjs", "ts", "tsx",
+        "py", "go", "rs", "java", "kt", "kts", "rb", "php", "dart", "lua", "sh", "bash", "zsh", "ps1", "bat", "cmd",
+        "html", "htm", "xml", "xaml", "svg", "css", "scss", "less", "vue", "svelte",
+        "json", "jsonc", "yaml", "yml", "toml", "ini", "conf", "config", "env", "sql", "md", "markdown", "tex", "r"
+    ]
     private var isText: Bool {
-        ["txt", "md", "markdown", "json", "xml", "yaml", "yml", "toml", "csv", "log", "swift", "cs", "c", "h", "cpp", "js", "ts", "py", "sh", "html", "css", "sql", "rs", "go", "java", "kt"].contains(fileExtension)
+        Self.codeExtensions.contains(fileExtension) || ["txt", "log", "csv", "tsv"].contains(fileExtension)
     }
+    /// Code files get the same line-level highlighting the Windows preview applies.
+    private var isCode: Bool { Self.codeExtensions.contains(fileExtension) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -71,7 +79,8 @@ struct AttachmentPreviewView: View {
     private var previewKind: String {
         if isImage { "图片预览" }
         else if isPDF { "PDF 文档" }
-        else if isText { "文本 / 源码预览（只读）" }
+        else if isCode { "源码预览（只读，含行号与基础着色）" }
+        else if isText { "文本预览（只读）" }
         else if isDOCX { "Word 正文预览（只读）" }
         else { "系统打开" }
     }
@@ -99,12 +108,15 @@ struct AttachmentPreviewView: View {
             previewUnavailable(loadError)
         } else if let textContent {
             let lines = textContent.components(separatedBy: .newlines)
+            // Very large files stay plain: colouring thousands of lines would stall scrolling.
+            let highlight = isCode && textContent.count <= CodeHighlighter.maximumCharacters
             ScrollView([.horizontal, .vertical]) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                         HStack(alignment: .top, spacing: 16) {
                             Text("\(index + 1)").foregroundStyle(.tertiary).frame(width: 46, alignment: .trailing)
-                            Text(line.isEmpty ? " " : line).textSelection(.enabled)
+                            if highlight { highlighted(line).textSelection(.enabled) }
+                            else { Text(line.isEmpty ? " " : line).textSelection(.enabled) }
                         }
                         .font(.system(size: 12, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -112,6 +124,22 @@ struct AttachmentPreviewView: View {
                 }.padding(16)
             }.background(Color(nsColor: .textBackgroundColor))
         }
+    }
+
+    /// Concatenates the line's tokens, colouring comments, strings, numbers and keywords.
+    private func highlighted(_ line: String) -> Text {
+        guard !line.isEmpty else { return Text(" ") }
+        var output = Text("")
+        for token in CodeHighlighter.tokens(in: line) {
+            switch token.kind {
+            case .plain: output = output + Text(token.text)
+            case .comment: output = output + Text(token.text).foregroundColor(Color(red: 0.36, green: 0.55, blue: 0.35))
+            case .string: output = output + Text(token.text).foregroundColor(Color(red: 0.72, green: 0.40, blue: 0.30))
+            case .number: output = output + Text(token.text).foregroundColor(Color(red: 0.45, green: 0.45, blue: 0.78))
+            case .keyword: output = output + Text(token.text).foregroundColor(Color(red: 0.55, green: 0.25, blue: 0.60))
+            }
+        }
+        return output
     }
 
     @ViewBuilder

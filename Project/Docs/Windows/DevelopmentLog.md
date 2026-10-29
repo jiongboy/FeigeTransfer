@@ -15,6 +15,13 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-10-28 剪贴板图片粘贴
+
+- 聊天输入框现在支持 Ctrl+V（或 Shift+Insert）直接粘贴剪贴板中的截图：剪贴板含文件时仍按文件发送（资源管理器复制图片文件常同时携带两者，文件名更重要）；否则若含位图，则经 `BitmapDecoder` + `BitmapEncoder` 转为 PNG，保存到 `<AppData>\PastedImages\` 后按图片发送。
+- 之所以先落盘再发送：剪贴板中的位图流不持久，且 `startSending` 读的是文件路径；落盘还让“重试”能重发完全相同的字节。
+- 与 macOS 行为一致（Mac 输入框原本已支持 ⌘V 粘贴图片）。
+- **验证范围**：`Feige.Core` 466 项测试在本机 .NET 11 SDK（roll-forward 运行 net10 目标）下全部通过，确认未影响核心逻辑。剪贴板代码单独做了类型检查：用桩类型复刻 Microsoft Learn 的真实 WinRT 签名后编译新增方法体，**据此发现并修复了 `using var` 误用 `BitmapDecoder`/`BitmapEncoder` 的编译错误**（这两个类型不实现 `IDisposable`）。WinUI 工程本身仍无法在 macOS 上编译（需 `net10.0-windows` 目标与 Windows 开发机）；实机粘贴验证待 Windows 环境执行。
+
 ## 2026-10-27 正式签名材料重建、ROG 打包机接入、首个正式版发布
 
 - **签名材料重建**：原 pin `799BFE…` 的证书在 ROG 上仍在，但代码签名与清单两套私钥都被创建为不可导出，重装即失效。按用户决策重建：新证书 `CN=Songli`（RSA-3072，至 2036-10-27，pin `7EAEAE46…`）、新清单密钥 `feige-update-release-2026`（`ExportPolicy=AllowExport`），并把加密 PFX 与 PKCS#8 私钥备份到 `C:\Keys\FeigeRelease\`。`UpdateSource.json` 的公钥与 pin 已同步为新值，**旧测试包因此全部失效**。

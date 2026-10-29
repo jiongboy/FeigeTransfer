@@ -418,17 +418,22 @@ QU 位与非 5353 源端口回单播、TTL 到期自动移除、真实 socket �
 .\scripts\Build-Msix.ps1 -CertThumbprint <40 位指纹> -TrustDevCert
 ```
 
-脚本内部是 `dotnet publish -p:AppxBundle=Never -p:UapAppxPackageBuildMode=SideloadOnly
--p:AppxPackageSigningEnabled=false`，再用 `signtool sign /fd SHA256` 手工签名。
+脚本内部是 `dotnet restore` + `dotnet msbuild -t:Publish
+-p:AppxBundle=Never -p:UapAppxPackageBuildMode=SideloadOnly -p:AppxPackageSigningEnabled=false
+-p:PublishReadyToRun=false`，再用 `signtool sign /fd SHA256` 手工签名。
 **关掉 MSBuild 的签名步骤是刻意的**：它只认 `.pfx` 文件路径，而开发证书通常装在证书存储里；
 拆开之后证书来源（存储 / pfx）与签名动作互不绑定，也便于在 CI 上用环境变量注入。
+
+用 `msbuild -t:Publish` 而不是 `dotnet publish` 的原因见 [本地调试与发布流程](LocalDebugAndRelease.md)：CLI 包装器会按发布配置文件改写输出目录，并可能在整个产物流失时仍返回 0。`dotnet msbuild` 也不执行 `dotnet publish` 的隐式还原，所以两个打包脚本都先显式 `dotnet restore`，否则干净克隆会报 `NETSDK1004`。
 
 历史构建文档中的 MSIX 示例路径为 `download/msix/`；新项目的安装包、MSIX 包及校验文件都直接放在 `Release/Windows/<version>/`，例如 `Release/Windows/1.2.1/FeigeSetup-1.2.1-b1301-x64.exe` 或 `Release/Windows/1.2.1/Feige.App_<ver>_x64_Test/Feige.App_<ver>_x64.msix`（未裁剪时约 **81 MB**），不再额外建立 `EXE/`、`MSIX/` 子目录。
 
 - **`PublishTrimmed` 必须为 `false`**：模板对 Release 默认开启裁剪，而 WinUI 3 的 XAML 类型解析与 WinRT
   投影依赖反射元数据，裁剪器看不见它们——包能构建出来，装上去一启动就崩。这一项只能整体关掉，没有
   中间档位。
-- `PublishReadyToRun` 保持 Release 开启，只影响启动速度，与裁剪无关。
+- `PublishReadyToRun` 在安装包（`Build-Installer.ps1`）路径保持 Release 开启，只影响启动速度，与裁剪无关。
+  **MSIX 路径必须显式关闭**：`Build-Msix.ps1` 不传 `RuntimeIdentifier`，而 csproj 对 Release 开启 ReadyToRun，
+  会让发布直接失败（`NETSDK1094`：找不到有效的运行时包）；架构由单项目 MSIX 自己决定。
 - 证书与私钥落在 `Project/Windows/.certs/`，已在 `.gitignore` 中排除（`*.pfx` / `*.cer` / `.certs/`）。
   仓库里只有脚本，谁构建谁生成证书。
 

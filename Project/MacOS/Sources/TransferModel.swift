@@ -10,11 +10,52 @@ struct DeviceSettings: Codable {
     var receiveDirectory: URL
     var firstRunComplete: Bool
     var setupStep: Int? = nil
+    /// Preferences added after 0.3.3 keep their defaults when reading older files.
+    var autoCheckUpdates: Bool = true
+    var notificationsEnabled: Bool = false
+    var backgroundTipSeen: Bool = false
+    var connectionTipSeen: Bool = false
+    var legacyReviewPending: Bool = false
 
     static var `default`: DeviceSettings {
         let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? FileManager.default.homeDirectoryForCurrentUser
         return DeviceSettings(deviceName: name, receiveDirectory: downloads.appendingPathComponent("Feige Received", isDirectory: true), firstRunComplete: false)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case deviceName, receiveDirectory, firstRunComplete, setupStep
+        case autoCheckUpdates, notificationsEnabled, backgroundTipSeen, connectionTipSeen, legacyReviewPending
+    }
+
+    /// Memberwise initializer kept explicit because declaring `init(from:)` suppresses synthesis.
+    init(deviceName: String, receiveDirectory: URL, firstRunComplete: Bool, setupStep: Int? = nil,
+         autoCheckUpdates: Bool = true, notificationsEnabled: Bool = false, backgroundTipSeen: Bool = false,
+         connectionTipSeen: Bool = false, legacyReviewPending: Bool = false) {
+        self.deviceName = deviceName
+        self.receiveDirectory = receiveDirectory
+        self.firstRunComplete = firstRunComplete
+        self.setupStep = setupStep
+        self.autoCheckUpdates = autoCheckUpdates
+        self.notificationsEnabled = notificationsEnabled
+        self.backgroundTipSeen = backgroundTipSeen
+        self.connectionTipSeen = connectionTipSeen
+        self.legacyReviewPending = legacyReviewPending
+    }
+
+    /// Synthesized decoding would fail on every older settings file because missing keys do not
+    /// fall back to the member defaults; optional/defaulted fields are decoded individually.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        deviceName = try values.decode(String.self, forKey: .deviceName)
+        receiveDirectory = try values.decode(URL.self, forKey: .receiveDirectory)
+        firstRunComplete = try values.decode(Bool.self, forKey: .firstRunComplete)
+        setupStep = try values.decodeIfPresent(Int.self, forKey: .setupStep)
+        autoCheckUpdates = try values.decodeIfPresent(Bool.self, forKey: .autoCheckUpdates) ?? true
+        notificationsEnabled = try values.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? false
+        backgroundTipSeen = try values.decodeIfPresent(Bool.self, forKey: .backgroundTipSeen) ?? false
+        connectionTipSeen = try values.decodeIfPresent(Bool.self, forKey: .connectionTipSeen) ?? false
+        legacyReviewPending = try values.decodeIfPresent(Bool.self, forKey: .legacyReviewPending) ?? false
     }
 }
 
@@ -72,13 +113,29 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     @Published var canRetry = false
     @Published var queueCompleted = 0
     @Published var queueCount = 0
+    @Published var drafts: [String: String] = [:]
+    @Published private(set) var notificationInvitationPending = false
+    @Published private(set) var firstTransferNoticePending = false
+    @Published private(set) var backgroundNoticePending = false
+    @Published private(set) var notifierStatus = ""
+    @Published private(set) var notifierAvailable = false
+    @Published private(set) var updates: UpdateController?
     var isBusy: Bool { isConnecting || isSending || isReceivingFile }
+
+    /// Transfers in flight across both directions; an idle connection never blocks an update.
+    var hasActiveWork: Bool { isSending || isReceivingFile || isSendingText || pendingConnectionPeerName != nil }
 
     private let identityLoader: @Sendable () throws -> DeviceIdentity
     private let settingsURL: URL
     private let historyURL: URL
     private let messagesURL: URL
+    private let draftsURL: URL
+    private let supportDirectory: URL
     private let lan = LANService()
+    private let notifier = TransferNotifier()
+    private var networkMonitor: NWPathMonitor?
+    private let networkQueue = DispatchQueue(label: "com.feige.network-monitor")
+    private var networkRefreshTask: Task<Void, Never>?
     private var started = false
     private var preparedIdentity: DeviceIdentity?
     private var identityPreparationTask: Task<DeviceIdentity, Error>?
@@ -86,6 +143,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private var generation = UUID()
     private var approvalID: UUID?
     private var approvalContinuation: CheckedContinuation<Bool, Error>?
+    /// Pending file confirmations keyed by transfer id; only one file may be in flight per connection.
+    private var fileDecisions: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    /// Time allowed to answer a file confirmation, matching the Windows client.
+    static let fileApprovalTimeout: Duration = .seconds(120)
     private var transport: NetworkByteStream?
     private var channel: FileConnection?
     private var connectionTask: Task<Void, Never>?
@@ -96,16 +157,39 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private var lastDevice: LANDevice?
     private var conversationArchiveLoadFailed = false
 
-    init(supportDirectory: URL? = nil, identityStore: DeviceIdentityStore = DeviceIdentityStore(),
-         identityLoader: (@Sendable () throws -> DeviceIdentity)? = nil) {
-        self.identityLoader = identityLoader ?? { try identityStore.loadOrCreate() }
+    init(supportDirectory: URL? = nil, identityService: String = EncryptedIdentityStore.defaultServiceIdentifier,
+         /// Kept for source compatibility with callers that also pass an explicit loader; unused when a
+         /// loader is supplied, because the loader owns identity creation in that case.
+         identityStore: DeviceIdentityStore? = nil,
+         identityLoader: (@Sendable () throws -> DeviceIdentity)? = nil,
+         updateSource: UpdateSource? = nil, updateVersion: AppVersionInfo = .current,
+         makeUpdates: Bool = true) {
         let support = supportDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FeigeTransfer", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        self.supportDirectory = support
+        // The private key lives in an encrypted file plus a non-ACL Keychain wrapping key, so start-up,
+        // signing and device fingerprint lookups never open the "Keychain wants your password" prompt.
+        let encryptedStore = EncryptedIdentityStore(directory: support.appendingPathComponent("Identity", isDirectory: true),
+                                                    serviceIdentifier: identityService)
+        self.identityLoader = identityLoader ?? {
+            // Keep an upgraded install's existing fingerprint before falling back to a new key.
+            encryptedStore.migrateLegacyKeyIfNeeded()
+            return try encryptedStore.loadOrCreate()
+        }
         settingsURL = support.appendingPathComponent("settings.json")
         historyURL = support.appendingPathComponent("history.json")
         messagesURL = support.appendingPathComponent("messages.json")
+        draftsURL = support.appendingPathComponent("drafts.json")
         load()
+        drafts = (try? Data(contentsOf: draftsURL)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+        if makeUpdates {
+            let controller = UpdateController(supportDirectory: support, version: updateVersion, source: updateSource)
+            updates = controller
+            Task { await self.refreshNotifierStatus() }
+        }
+        notifierStatus = notifier.status
+        notifierAvailable = notifier.isAvailable
         lan.onDevices = { [weak self] in
             self?.nearbyDevices = $0
             if self?.isRefreshingPeers == true { self?.peerRefreshFailed = false }
@@ -119,6 +203,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             guard let self else { connection.cancel(); return }
             self.accept(connection)
         }
+        startNetworkMonitoring()
+        if settings.notificationsEnabled {
+            Task { await self.refreshNotifierStatus() }
+        }
     }
 
     func start() async {
@@ -127,6 +215,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             return
         }
         await prepareIdentity()
+        if settings.firstRunComplete {
+            updates?.start()
+            updates?.preferencesChanged(autoCheckEnabled: settings.autoCheckUpdates, setupEnded: true)
+        }
     }
 
     func prepareIdentityForSetup() async {
@@ -211,6 +303,133 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     func deferFirstRunSetup() { isFirstRun = false }
 
+    // MARK: preferences
+
+    func setAutoCheckUpdates(_ enabled: Bool) throws {
+        var updated = settings
+        updated.autoCheckUpdates = enabled
+        try persist(updated, to: settingsURL)
+        settings = updated
+        updates?.preferencesChanged(autoCheckEnabled: enabled, setupEnded: settings.firstRunComplete)
+    }
+
+    /// Persists the preference first, then asks macOS for permission. Failure keeps the old value.
+    @discardableResult
+    func enableNotifications() async throws -> Bool {
+        let granted = await notifier.requestAuthorization()
+        var updated = settings
+        updated.notificationsEnabled = granted
+        try persist(updated, to: settingsURL)
+        settings = updated
+        notificationInvitationPending = false
+        await refreshNotifierStatus()
+        return granted
+    }
+
+    func disableNotifications() throws {
+        var updated = settings
+        updated.notificationsEnabled = false
+        try persist(updated, to: settingsURL)
+        settings = updated
+    }
+
+    func refreshNotifierStatus() async {
+        await notifier.refreshStatus()
+        notifierStatus = notifier.status
+        notifierAvailable = notifier.isAvailable
+    }
+
+    func sendTestNotification() async {
+        await refreshNotifierStatus()
+        notifier.show(title: "飞鸽快传测试通知", body: "能看到这条说明系统通知工作正常。")
+    }
+
+    func dismissNotificationInvitation() { notificationInvitationPending = false }
+    func dismissTransferNotice() { firstTransferNoticePending = false }
+    func dismissBackgroundNotice() { backgroundNoticePending = false }
+    /// Clears the "原有资料已保留" tip. A failed save keeps the tip dismissed for this run only and
+    /// is recorded in the log; the Windows client surfaces the save error instead.
+    func dismissLegacyReviewQuietly() {
+        guard settings.legacyReviewPending else { return }
+        var updated = settings
+        updated.legacyReviewPending = false
+        settings = updated
+        do { try persist(updated, to: settingsURL) }
+        catch { AppLogFile.write("settings: legacy tip save failed \(type(of: error))", in: supportDirectory) }
+    }
+
+    /// Records that the first-connection tip was shown; failures keep the in-memory value only.
+    func markConnectionTipSeen() {
+        guard !settings.connectionTipSeen else { return }
+        var updated = settings
+        updated.connectionTipSeen = true
+        try? persist(updated, to: settingsURL)
+        settings = updated
+    }
+
+    /// Closing the window keeps the app running; explain that once, the way Windows does.
+    func markBackgroundNotice() {
+        guard !settings.backgroundTipSeen else { return }
+        var updated = settings
+        updated.backgroundTipSeen = true
+        try? persist(updated, to: settingsURL)
+        settings = updated
+        backgroundNoticePending = true
+        if notifier.isAvailable {
+            notifier.show(title: "飞鸽快传仍在后台运行", body: "可从 Dock 图标或“文件 → 显示主窗口”重新打开；停止运行请按 ⌘Q。")
+        }
+    }
+
+    // MARK: drafts
+
+    func setDraft(_ text: String, for peerID: String) {
+        let key = peerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        drafts[key] = text.isEmpty ? nil : text
+        saveDrafts()
+    }
+
+    func clearDraft(for peerID: String) {
+        drafts[peerID] = nil
+        saveDrafts()
+    }
+
+    private func saveDrafts() {
+        do {
+            let data = try JSONEncoder().encode(drafts.filter { !$0.value.isEmpty })
+            try data.write(to: draftsURL, options: .atomic)
+        } catch {
+            AppLogFile.write("draft save: \(type(of: error))", in: supportDirectory)
+        }
+    }
+
+    // MARK: network changes
+
+    private func startNetworkMonitoring() {
+        guard networkMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let available = path.status == .satisfied
+            Task { @MainActor in self?.handleNetworkChange(available: available) }
+        }
+        monitor.start(queue: networkQueue)
+        networkMonitor = monitor
+    }
+
+    /// Rebuilds discovery after the network settles. Established sessions, the listener port and
+    /// the consent stay untouched; later-mode and shutdown never restart the service.
+    private func handleNetworkChange(available: Bool) {
+        guard available, started, settings.firstRunComplete, isIdentityReady else { return }
+        networkRefreshTask?.cancel()
+        networkRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(750))
+            guard let self, !Task.isCancelled else { return }
+            self.localAddress = LANAddress.currentIPv4()
+            self.refreshDiscovery()
+            AppLogFile.write("network: discovery refreshed", in: self.supportDirectory)
+        }
+    }
+
     private func validateReceiveDirectory(_ directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let probe = directory.appendingPathComponent(".feige-write-check-\(UUID().uuidString)")
@@ -281,10 +500,22 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     }
 
     func manualDevice(host: String, port: String) throws -> LANDevice {
-        guard let number = UInt16(port), number > 0 else { throw NetworkTransportError.invalidPort }
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host.trimmingCharacters(in: .whitespacesAndNewlines)), port: NWEndpoint.Port(rawValue: number)!)
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digits = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let number = UInt16(digits), number > 0 else { throw NetworkTransportError.invalidPort }
+        // Manual entry must be a literal local/private address: no host names, public ranges or brackets.
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("["), trimmed.contains(":") || trimmed.allSatisfy({ $0.isNumber || $0 == "." }) else {
+            throw NetworkTransportError.invalidHost
+        }
+        // Require a canonical literal so "999.1.1.1" cannot be reinterpreted later.
+        if trimmed.contains(":") {
+            guard IPv6Address(trimmed) != nil else { throw NetworkTransportError.invalidHost }
+        } else {
+            guard IPv4Address(trimmed) != nil else { throw NetworkTransportError.invalidHost }
+        }
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(trimmed), port: NWEndpoint.Port(rawValue: number)!)
         guard LANEndpointPolicy.allows(endpoint) else { throw NetworkTransportError.invalidHost }
-        return LANDevice(serviceName: host, displayName: host, endpoint: endpoint)
+        return LANDevice(serviceName: trimmed, displayName: trimmed, endpoint: endpoint)
     }
 
     func requestConnection(to device: LANDevice, pendingFiles: [URL] = []) {
@@ -390,11 +621,16 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         isConnecting = false
         connectionTask = nil
         connectionState = "已连接：\(connection.peerName)"
+        markConnectionTipSeen()
         let directory = settings.receiveDirectory
         readerTask = Task { [self] in
             do {
                 try await connection.run(receiveDirectory: directory, directoryProvider: { [weak self] in
                     await self?.settings.receiveDirectory ?? directory
+                }, fileApproval: { [weak self] metadata in
+                    guard let self else { return false }
+                    return await self.requestFileApproval(metadata, peer: connection.peerName,
+                                                          peerID: connection.peerFingerprint, generation: token)
                 }, didReceive: { [weak self] metadata, url in
                     await self?.received(metadata, at: url, peer: connection.peerName, peerID: connection.peerFingerprint, generation: token)
                 }, progress: { [weak self] metadata, count in
@@ -416,6 +652,63 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Shows an incoming file as "等待你确认接收" and suspends until the user decides.
+    ///
+    /// A file is never written to disk before this returns `true`, so declining cannot leave a partial
+    /// file. Asking fails closed: a disconnected connection or cancelled task declines.
+    private func requestFileApproval(_ metadata: FileMetadata, peer: String, peerID: String,
+                                     generation token: UUID) async -> Bool {
+        guard generation == token, isConnected else { return false }
+        if let index = messages.firstIndex(where: { $0.id == metadata.transferID && $0.peerID == peerID && $0.direction == .received }) {
+            messages[index].status = .awaitingApproval
+            messages[index].failureReason = nil
+            saveMessages()
+        } else {
+            messages.append(ChatMessage(id: metadata.transferID, peerID: peerID, peerName: peer,
+                                        direction: .received,
+                                        kind: metadata.kind == .image ? .image : .file,
+                                        fileName: metadata.fileName, size: Int64(metadata.size),
+                                        status: .awaitingApproval))
+            saveMessages()
+        }
+        // Files arrive one at a time per connection, so the buttons map to a single pending id.
+        // Waiting expires like Windows: an unanswered request declines instead of blocking forever.
+        let timeout = Task { [weak self] in
+            try? await Task.sleep(for: Self.fileApprovalTimeout)
+            guard !Task.isCancelled else { return }
+            self?.resolveFileDecision(metadata.transferID, accepted: false, timedOut: true)
+        }
+        let accepted = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                guard generation == token else { continuation.resume(returning: false); return }
+                fileDecisions[metadata.transferID] = continuation
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.resolveFileDecision(metadata.transferID, accepted: false, timedOut: false) }
+        }
+        timeout.cancel()
+        if !accepted { markFileDeclined(metadata.transferID, peerID: peerID) }
+        return accepted
+    }
+
+    /// Called by the message card. Accepting lets the transfer start; declining closes the connection.
+    func decideIncomingFile(_ transferID: UUID, accepted: Bool) {
+        resolveFileDecision(transferID, accepted: accepted, timedOut: false)
+    }
+
+    private func resolveFileDecision(_ transferID: UUID, accepted: Bool, timedOut: Bool) {
+        guard let continuation = fileDecisions.removeValue(forKey: transferID) else { return }
+        if timedOut { markFileDeclined(transferID, peerID: connectedPeerID, reason: "等待接收确认超时。") }
+        continuation.resume(returning: accepted)
+    }
+
+    private func markFileDeclined(_ transferID: UUID, peerID: String, reason: String? = nil) {
+        guard let index = messages.firstIndex(where: { $0.id == transferID && $0.peerID == peerID && $0.direction == .received }) else { return }
+        messages[index].status = .declined
+        messages[index].failureReason = reason ?? "已拒绝接收该文件。"
+        saveMessages()
     }
 
     private func receiving(_ metadata: FileMetadata, count: UInt64, generation token: UUID) {
@@ -447,6 +740,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         isReceivingFile = false
         receiveProgress = 1
         receiveStatus = "已接收：\(url.lastPathComponent)"
+        noteFirstSuccessfulTransfer(title: "收到文件", body: "\(peer) 发送了 \(url.lastPathComponent)。")
     }
 
     func startSendingPastedImage(_ image: NSImage) {
@@ -518,6 +812,22 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 }
             }
             transferStatus = "已发送 \(queueCompleted) 个文件"
+            if queueCompleted > 0 {
+                let last = urls.last?.lastPathComponent ?? "文件"
+                noteFirstSuccessfulTransfer(title: "发送完成", body: "对方已接收 \(last)。")
+            }
+        }
+    }
+
+    /// First completed transfer shows a closable tip and, once, invites turning on notifications.
+    /// Accepting or skipping the invitation never repeats it.
+    private func noteFirstSuccessfulTransfer(title: String, body: String) {
+        if !settings.notificationsEnabled && !notifierAvailable && !firstTransferNoticePending {
+            notificationInvitationPending = true
+        }
+        firstTransferNoticePending = true
+        if settings.notificationsEnabled {
+            notifier.show(title: title, body: body)
         }
     }
 
@@ -555,6 +865,11 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             if let failureReason { messages[index].failureReason = failureReason }
         }
         saveMessages()
+        for (id, continuation) in fileDecisions {
+            markFileDeclined(id, peerID: connectedPeerID, reason: "连接已断开，未开始接收。")
+            continuation.resume(returning: false)
+        }
+        fileDecisions.removeAll()
         channel?.close(); channel = nil
         transport?.close(); transport = nil
         approveConnection(false)
@@ -577,6 +892,11 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         preparedIdentity = nil
         disconnect()
         stopDiscovery()
+        networkRefreshTask?.cancel()
+        networkRefreshTask = nil
+        networkMonitor?.cancel()
+        networkMonitor = nil
+        updates?.stop()
     }
 
     var totalTransferredBytes: Int64 {
@@ -590,6 +910,12 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         let updated = Array(([record] + records).prefix(1000))
         do { try persist(updated, to: historyURL); records = updated }
         catch { errorMessage = "文件已传输，但保存记录失败：\(error.localizedDescription)" }
+    }
+
+    /// Clears the transfer record list only; received files and conversation text stay on disk.
+    func clearHistory() throws {
+        try persist([TransferRecord](), to: historyURL)
+        records = []
     }
 
     var chatPeers: [ChatPeer] {
@@ -682,6 +1008,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 _ = try await connection.sendText(message.text ?? "", id: message.id)
                 guard generation == token else { return }
                 updateMessage(message.id, status: .delivered)
+                noteFirstSuccessfulTransfer(title: "消息已送达", body: "对方已收到你的消息。")
             } catch {
                 guard generation == token else { return }
                 updateMessage(message.id, status: .failed, failureReason: error.localizedDescription)

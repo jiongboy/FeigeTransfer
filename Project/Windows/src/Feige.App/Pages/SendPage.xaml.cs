@@ -11,9 +11,12 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Navigation;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Graphics.Imaging;
 using Windows.Storage;
 using Windows.Storage.Pickers;
+using Windows.Storage.Streams;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -339,11 +342,22 @@ public sealed partial class SendPage : Page
         bool controlDown = (Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control) & CoreVirtualKeyStates.Down) != 0;
         bool pasteShortcut = (controlDown && e.Key == VirtualKey.V) ||
             (e.Key == VirtualKey.Insert && (Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift) & CoreVirtualKeyStates.Down) != 0);
-        if (pasteShortcut && Clipboard.GetContent().Contains(StandardDataFormats.StorageItems))
+        if (pasteShortcut)
         {
-            e.Handled = true;
-            await PasteFilesFromClipboardAsync();
-            return;
+            var content = Clipboard.GetContent();
+            // Copied files win over bitmaps: Explorer copies often carry both, and the file keeps its name.
+            if (content.Contains(StandardDataFormats.StorageItems))
+            {
+                e.Handled = true;
+                await PasteFilesFromClipboardAsync();
+                return;
+            }
+            if (content.Contains(StandardDataFormats.Bitmap))
+            {
+                e.Handled = true;
+                await PasteImageFromClipboardAsync();
+                return;
+            }
         }
         if (e.Key != VirtualKey.Enter || _composing || !SendButton.IsEnabled) return;
         if ((Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift) & CoreVirtualKeyStates.Down) != 0) return;
@@ -362,6 +376,38 @@ public sealed partial class SendPage : Page
             await Session.SendFilesAsync(conversation!, items.Select(item => item.Path).ToArray());
         }
         catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
+    }
+    /// Saves a pasted screenshot as a PNG in the app data folder and sends it as an image.
+    ///
+    /// The clipboard holds an unpinned bitmap stream, so it must be copied out before sending; the
+    /// file also gives the receiver a stable name and lets "重试" resend the exact bytes.
+    private async Task PasteImageFromClipboardAsync()
+    {
+        var conversation = _selected;
+        if (!Session.CanSend(conversation) || Session.IsSendingFiles) return;
+        try
+        {
+            // BitmapDecoder/BitmapEncoder are plain WinRT objects, not IDisposable; only the
+            // streams and the SoftwareBitmap need disposing.
+            using var stream = await Clipboard.GetContent().GetBitmapAsync();
+            var decoder = await BitmapDecoder.CreateAsync(stream);
+            // Re-encode so any clipboard bitmap payload (BMP, DIB, ...) becomes a portable PNG.
+            using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+            using var encoded = new InMemoryRandomAccessStream();
+            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, encoded);
+            encoder.SetSoftwareBitmap(pixels);
+            await encoder.FlushAsync();
+            var bytes = new byte[encoded.Size];
+            encoded.Seek(0);
+            using (var reader = new DataReader(encoded)) { await reader.LoadAsync((uint)encoded.Size); reader.ReadBytes(bytes); }
+
+            var directory = Path.Combine(AppSettings.AppDataFolder, "PastedImages");
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, $"粘贴图片-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.png");
+            await File.WriteAllBytesAsync(path, bytes);
+            await Session.SendFilesAsync(conversation!, [path], images: true);
+        }
+        catch (Exception ex) { ShowError("无法读取剪贴板中的图片。" + ErrorText.Describe(ex)); }
     }
     private async void OnSendTextClick(object sender, RoutedEventArgs e) => await SendTextAsync();
     private async Task SendTextAsync()

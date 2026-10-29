@@ -104,7 +104,7 @@ AAD 为 `type || sequence || ciphertextAndTagLength` 共 13 字节。`ctLen = pl
 | type | 名称 | 明文载荷 |
 | --- | --- | --- |
 | 1 | manifest | JSON：transferID(UUID)、fileName(String)、size(非负整数)、kind(String) |
-| 2 | decision | JSON：transferID、accepted(Boolean)；接收器准备文件成功的机器回执，无额外用户弹窗 |
+| 2 | decision | JSON：transferID、accepted(Boolean)；接收端对该文件的决定。接收方**可以**先询问用户（两端当前均默认开启逐个文件确认），也可按旧策略自动接受；拒绝时发送 accepted=false 并关闭连接 |
 | 3 | chunk | UUID 原始 16 字节 + offset:u64BE + 文件内容（1..65512 字节） |
 | 4 | receipt | JSON：transferID、sha256(Base64，32 字节) |
 | 7 | finish | JSON：transferID、sha256(Base64，32 字节) |
@@ -124,7 +124,9 @@ size 使用 64 位整数，范围 0..9223372036854775807；Windows 不得用 Int
 
 ### 时序
 
-发送 manifest → 接收端校验并安全创建暂存文件 → 发 decision(true) → 发连续 chunks → 发 finish(最终摘要) → 接收端确认大小、摘要、刷盘及原子提交 → 发 receipt(同 ID、同摘要)。只有 receipt 匹配才记发送成功。空文件不发 chunk，直接 finish，摘要为 SHA256(empty)。
+发送 manifest → 接收端校验，并由用户确认后安全创建暂存文件 → 发 decision(true) → 发连续 chunks → 发 finish(最终摘要) → 接收端确认大小、摘要、刷盘及原子提交 → 发 receipt(同 ID、同摘要)。只有 receipt 匹配才记发送成功。空文件不发 chunk，直接 finish，摘要为 SHA256(empty)。
+
+接收端必须在创建暂存文件**之前**完成确认：用户拒绝时不得写盘，发 decision(false) 后关闭连接。确认等待期不能计时为文件传输超时；发送端按 2 分钟等待 decision，避免用户犹豫时误断线。未实现确认的旧接收端立即发 decision(true)，因此与非确认发送端保持兼容；拒绝语义只在两端都支持时才有意义。
 
 UUID 的 16 字节按字符串去连字符后的十六进制顺序编码，例如 `00112233-4455-6677-8899-AABBCCDDEEFF` 对应 `00 11 22 33 44 55 66 77 88 99 AA BB CC DD EE FF`。**不能直接使用 .NET Guid.ToByteArray() 的默认混合端序布局。**
 
@@ -148,7 +150,7 @@ text.text 保留原始 Unicode/换行/空格，全空白或 UTF-8 超过 8192 �
 | 连接同意 | 独立最多 5 分钟 |
 | 已建立且无活动接收文件 | 不因空闲自动关闭 |
 | 活动文件接收数据 / 每次发送 | 15 秒空闲超时 |
-| 文件 decision | 30 秒 |
+| 文件 decision | 2 分钟（等待用户确认）＋10 秒网络余量 |
 | 文件最终 receipt | 5 分钟 |
 | 文字 receipt | 30 秒 |
 

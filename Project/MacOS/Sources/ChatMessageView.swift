@@ -6,6 +6,9 @@ struct ChatMessageView: View {
     let message: ChatMessage
     let canRetry: Bool
     var retry: () -> Void
+    /// Receiver actions for an incoming file that is waiting for confirmation.
+    var accept: () -> Void = {}
+    var decline: () -> Void = {}
     private var outgoing: Bool { message.direction == .sent }
     private let accent = Color.accentColor
     @State private var previewURL: URL?
@@ -77,7 +80,17 @@ struct ChatMessageView: View {
                 }
                 Spacer(minLength: 0)
             }
-            if message.isPending {
+            if message.status == .awaitingApproval {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(message.peerName == "" ? "对方请求发送此文件" : "\(message.peerName) 请求发送此文件")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("拒绝") { decline() }
+                    Button("接收") { accept() }.buttonStyle(.borderedProminent)
+                }.controlSize(.small)
+            } else if message.isPending {
                 ProgressView(value: message.progress)
                 Text(message.status == .queued ? "等待发送" : "\(outgoing ? "发送中" : "接收中") · \(Int(message.progress * 100))%")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -98,9 +111,11 @@ struct ChatMessageView: View {
     private var statusLabel: String {
         switch message.status {
         case .queued: "等待发送"
+        case .awaitingApproval: "等待你确认接收"
         case .sending: message.direction == .sent ? "发送中…" : "接收中…"
         case .delivered: "已送达"
         case .received: "已接收"
+        case .declined: "已拒绝接收"
         case .failed: "未完成"
         }
     }

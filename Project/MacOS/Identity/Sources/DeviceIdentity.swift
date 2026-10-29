@@ -11,6 +11,29 @@ public struct DeviceIdentity: @unchecked Sendable {
     public let publicKeyDER: Data
     public let fingerprint: String
 
+    /// Builds the identity from an already-resolved private key. Shared by the encrypted store and
+    /// the legacy Keychain store so the public DER, fingerprint and grouped display stay identical.
+    static func make(privateKey: SecKey) throws -> DeviceIdentity {
+        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
+            throw DeviceIdentityError.publicKeyExport(errSecDecode)
+        }
+        var error: Unmanaged<CFError>?
+        guard let rawPublicKey = SecKeyCopyExternalRepresentation(publicKey, &error) as Data? else {
+            let nsError = error?.takeRetainedValue() as Error? as NSError?
+            throw DeviceIdentityError.publicKeyExport(OSStatus(nsError?.code ?? Int(errSecInternalComponent)))
+        }
+        let publicData = try DeviceIdentityStore.rsaSubjectPublicKeyInfo(from: rawPublicKey)
+        let digest = SHA256.hash(data: publicData)
+        let hex = digest.map { String(format: "%02X", $0) }.joined()
+        guard !hex.isEmpty else { throw DeviceIdentityError.emptyFingerprint }
+        let grouped = stride(from: 0, to: hex.count, by: 4).map { offset -> String in
+            let start = hex.index(hex.startIndex, offsetBy: offset)
+            let end = hex.index(start, offsetBy: min(4, hex.count - offset))
+            return String(hex[start..<end])
+        }.joined(separator: " ")
+        return DeviceIdentity(privateKey: privateKey, publicKey: publicKey, publicKeyDER: publicData, fingerprint: grouped)
+    }
+
     /// Trigger any system authorization before advertising or opening connections.
     /// A public-key lookup alone does not prove this process can use the private key.
     public func validateSigningAccess() throws {
@@ -36,13 +59,18 @@ public enum DeviceIdentityError: LocalizedError {
     case publicKeyExport(OSStatus)
     case emptyFingerprint
     case signingAuthorization(OSStatus)
+    case privateKeyUnreadable(OSStatus)
+    case wrappingKeyUnavailable
 
     public var errorDescription: String? {
         switch self {
-        case .keyGeneration(let status): "无法在钥匙串创建设备身份密钥（错误码 \(status)）。"
+        case .keyGeneration(let status): "无法生成设备身份密钥（错误码 \(status)）。"
         case .publicKeyExport(let status): "无法导出设备公钥（错误码 \(status)）。"
         case .emptyFingerprint: "设备公钥指纹为空。"
-        case .signingAuthorization(let status): "设备身份授权未完成（错误码 \(status)），请允许系统钥匙串访问后重试。"
+        case .signingAuthorization(let status): "设备身份签名检查失败（错误码 \(status)），请重试或重新授权。"
+        case .privateKeyUnreadable(let status):
+            "本机设备身份无法读取（错误码 \(status)），原文件已保留。可备份资料后重置设备身份。"
+        case .wrappingKeyUnavailable: "本机设备身份的加密密钥不可用，原身份文件已保留。"
         }
     }
 }
@@ -57,7 +85,7 @@ public struct DeviceIdentityStore: Sendable {
 
     public func loadOrCreate() throws -> DeviceIdentity {
         if let existing = try loadPrivateKey() {
-            return try identity(for: existing)
+            return try DeviceIdentity.make(privateKey: existing)
         }
         let attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
@@ -73,7 +101,7 @@ public struct DeviceIdentityStore: Sendable {
             let nsError = error?.takeRetainedValue() as Error? as NSError?
             throw DeviceIdentityError.keyGeneration(OSStatus(nsError?.code ?? Int(errSecInternalComponent)))
         }
-        return try identity(for: privateKey)
+        return try DeviceIdentity.make(privateKey: privateKey)
     }
 
     /// Remove a dedicated Keychain identity. Intended for explicit account reset and isolated tests.
@@ -127,26 +155,5 @@ public struct DeviceIdentityStore: Sendable {
             value >>= 8
         }
         return Data([0x80 | UInt8(bytes.count)] + bytes)
-    }
-
-    private func identity(for privateKey: SecKey) throws -> DeviceIdentity {
-        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
-            throw DeviceIdentityError.publicKeyExport(errSecDecode)
-        }
-        var error: Unmanaged<CFError>?
-        guard let rawPublicKey = SecKeyCopyExternalRepresentation(publicKey, &error) as Data? else {
-            let nsError = error?.takeRetainedValue() as Error? as NSError?
-            throw DeviceIdentityError.publicKeyExport(OSStatus(nsError?.code ?? Int(errSecInternalComponent)))
-        }
-        let publicData = try Self.rsaSubjectPublicKeyInfo(from: rawPublicKey)
-        let digest = SHA256.hash(data: publicData)
-        let hex = digest.map { String(format: "%02X", $0) }.joined()
-        guard !hex.isEmpty else { throw DeviceIdentityError.emptyFingerprint }
-        let grouped = stride(from: 0, to: hex.count, by: 4).map { offset -> String in
-            let start = hex.index(hex.startIndex, offsetBy: offset)
-            let end = hex.index(start, offsetBy: min(4, hex.count - offset))
-            return String(hex[start..<end])
-        }.joined(separator: " ")
-        return DeviceIdentity(privateKey: privateKey, publicKey: publicKey, publicKeyDER: publicData, fingerprint: grouped)
     }
 }

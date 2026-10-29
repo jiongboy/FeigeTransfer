@@ -1,0 +1,13 @@
+{
+  "channel": "stable",
+  "algorithm": "p256",
+  "keyId": "feige-macos-release-2026",
+  "publicKey": "BHqQwBJrXzghnTdKxvsi4IeqBGOyZcYXNVarHCaEcXnJNQWY2XfeNgB/M+dWEaBs4RI2lO4yKxGylZX8rdwCKqI=",
+  "origins": [
+    {
+      "base": "http://192.168.50.229:8080/updates",
+      "hosts": [ "192.168.50.229" ],
+      "allowInsecurePrivateNetwork": true
+    }
+  ]
+}

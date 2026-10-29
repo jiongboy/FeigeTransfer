@@ -125,7 +125,9 @@ public final class FileConnection: @unchecked Sendable {
                 let accepted = ResponseSlot<Bool>()
                 lock.withLock { decision = accepted }
                 try await writer.send(type: .manifest, payload: JSONEncoder().encode(metadata))
-                guard try await accepted.wait(timeout: 30) else { throw TransferSessionError.peerRejected }
+                // The receiver may be waiting for a human, so allow the same 2 minutes 10 seconds the
+                // Windows client uses; a shorter window would drop connections while the user decides.
+                guard try await accepted.wait(timeout: 130) else { throw TransferSessionError.peerRejected }
 
                 var offset: UInt64 = 0
                 var hasher = SHA256()
@@ -176,8 +178,14 @@ public final class FileConnection: @unchecked Sendable {
     }
 
     /// Call once after consent. The connection stays open between files until disconnected.
+    /// Runs the shared read loop.
+    ///
+    /// `fileApproval` is asked once per incoming file, before any temp file is created and before the
+    /// decision is sent. Returning `false` sends a reject decision; throwing is treated as a refusal
+    /// and closes the connection, matching the Windows client's behaviour.
     public func run(receiveDirectory: URL,
                     directoryProvider: (@Sendable () async -> URL)? = nil,
+                    fileApproval: (@Sendable (FileMetadata) async throws -> Bool)? = nil,
                     didReceive: @escaping @Sendable (FileMetadata, URL) async -> Void,
                     progress: @escaping @Sendable (FileMetadata, UInt64) async -> Void = { _, _ in },
                     didReceiveText: @escaping @Sendable (ChatText) async throws -> Void = { _ in }) async throws {
@@ -205,6 +213,24 @@ public final class FileConnection: @unchecked Sendable {
                     case TransferMessageType.manifest.rawValue:
                         guard file == nil else { throw TransferCoordinatorError.wrongMessage }
                         let metadata = try JSONDecoder().decode(FileMetadata.self, from: record.plaintext)
+
+                        // Ask the user before touching the disk. Refusing (or any failure while asking)
+                        // sends a reject decision and ends the connection, exactly like Windows.
+                        var approved = true
+                        if let fileApproval {
+                            do { approved = try await fileApproval(metadata) }
+                            catch {
+                                try? await writer.send(type: .decision, payload: JSONEncoder().encode(
+                                    FileDecision(transferID: metadata.transferID, accepted: false)))
+                                throw error
+                            }
+                        }
+                        guard approved else {
+                            try await writer.send(type: .decision, payload: JSONEncoder().encode(
+                                FileDecision(transferID: metadata.transferID, accepted: false)))
+                            throw TransferCoordinatorError.rejectedByReceiver
+                        }
+
                         let directory = await directoryProvider?() ?? receiveDirectory
                         let sink = try lock.withLock {
                             guard !closed else { throw ConnectionError.closed }

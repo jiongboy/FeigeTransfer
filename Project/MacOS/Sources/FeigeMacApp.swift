@@ -1,10 +1,14 @@
 import SwiftUI
 
 @MainActor
-final class FeigeAppDelegate: NSObject, NSApplicationDelegate {
+final class FeigeAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var onTermination: (() -> Void)?
+    var onMainWindowClosed: (() -> Void)?
     var openMainWindow: (() -> Void)?
     weak var mainWindow: NSWindow?
+    /// Set while the updater replaces the bundle so a pending "still running" tip is not recorded.
+    var isUpdating = false
+    private var closingMainWindow = false
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Swift Package executables need an explicit foreground activation policy
         // so their windows can become key and receive text input.
@@ -35,6 +39,14 @@ final class FeigeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) { onTermination?() }
+
+    /// Only a user-visible close counts: hiding for an update or terminating must stay silent.
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow, !closingMainWindow, !isUpdating else { return }
+        closingMainWindow = true
+        defer { closingMainWindow = false }
+        onMainWindowClosed?()
+    }
 }
 
 @main
@@ -48,16 +60,19 @@ struct FeigeMacApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 960, minHeight: 680)
                 .task { await model.start() }
-                .onAppear { appDelegate.onTermination = { model.shutdown() } }
+                .onAppear {
+                    appDelegate.onTermination = { model.shutdown() }
+                    appDelegate.onMainWindowClosed = { model.markBackgroundNotice() }
+                }
         }
         .windowStyle(.titleBar)
-        .commands { FeigeCommands(showMainWindow: { appDelegate.showMainWindow() }) }
+        .commands { FeigeCommands(model: model, showMainWindow: { appDelegate.showMainWindow() }) }
 
         Window("偏好设置", id: "settings") {
             SetupView(isFirstRun: false)
                 .environmentObject(model)
         }
-        .defaultSize(width: 560, height: 620)
+        .defaultSize(width: 620, height: 760)
         .windowResizability(.contentSize)
     }
 }
@@ -87,20 +102,31 @@ private struct MainWindowReader: NSViewRepresentable {
 
     func updateNSView(_ view: WindowReaderView, context: Context) {
         view.onWindow = onWindow
-        if let window = view.window { onWindow(window) }
+        if let window = view.window {
+            window.delegate = view.delegate
+            onWindow(window)
+        }
     }
 
     final class WindowReaderView: NSView {
         var onWindow: ((NSWindow) -> Void)?
+        let delegate = CloseObserver()
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let window { onWindow?(window) }
+            guard let window else { return }
+            delegate.onClose = { [weak window] in
+                guard let window, let appDelegate = NSApplication.shared.delegate as? FeigeAppDelegate else { return }
+                appDelegate.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+            }
+            window.delegate = delegate
+            onWindow?(window)
         }
     }
 }
 
 private struct FeigeCommands: Commands {
     @Environment(\.openWindow) private var openWindow
+    let model: TransferModel
     let showMainWindow: () -> Void
 
     var body: some Commands {
@@ -111,6 +137,17 @@ private struct FeigeCommands: Commands {
         CommandGroup(after: .appInfo) {
             Button("偏好设置…") { openWindow(id: "settings") }
                 .keyboardShortcut(",", modifiers: .command)
+            Button("检查更新…") {
+                if model.updates?.canCheck == true { model.updates?.check() }
+                openWindow(id: "settings")
+            }
         }
     }
+}
+
+/// Forwards the main window's close event without taking ownership of the window delegate logic.
+final class CloseObserver: NSObject, NSWindowDelegate {
+    var onClose: (() -> Void)?
+
+    func windowWillClose(_ notification: Notification) { onClose?() }
 }

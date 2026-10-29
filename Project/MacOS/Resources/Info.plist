@@ -7,8 +7,8 @@
     <key>CFBundleDisplayName</key><string>飞鸽快传</string>
     <key>CFBundleIconFile</key><string>Feige.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3.3</string>
-    <key>CFBundleVersion</key><string>6</string>
+    <key>CFBundleShortVersionString</key><string>0.4.0</string>
+    <key>CFBundleVersion</key><string>11</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSLocalNetworkUsageDescription</key><string>用于发现同一局域网的设备，并在对方同意连接后聊天、互传图片和文件。</string>

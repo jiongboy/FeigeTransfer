@@ -7,6 +7,7 @@ Windows-only instructions and evidence are maintained here. Shared protocol, pro
 - [Project overview](ProjectOverview.md)
 - [Developer guide](DeveloperGuide.md)
 - [Environment setup](EnvironmentSetup.md)
+- [Local debug and release flow](LocalDebugAndRelease.md)
 - [Windows client build instructions](../../Windows/README.md)
 
 ## Acceptance, release and history

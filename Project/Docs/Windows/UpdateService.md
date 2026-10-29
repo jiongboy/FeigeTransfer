@@ -22,7 +22,7 @@ LAN 地址使用明文 HTTP，只有在应用配置显式启用 `allowInsecurePr
 
 ## Mac mini 准备
 
-Mac mini 上已执行 `Project/Windows/scripts/Setup-LanUpdateServer.sh`：创建 `/usr/local/var/www/feige-updates/windows/stable/versions`，在现有 nginx `server` 中加入 `location /updates/`，经 `nginx -t` 验证后 reload。缺失清单返回 HTTP 404，写请求返回 403；配置会备份到 `/usr/local/etc/nginx/`（不在 nginx `servers/*` include 目录中）。nginx 进程仍监听 `*:8080`，更新 location 由 `allow 192.168.50.0/24` / `deny all` 限制访问；发布 SSH 用户需要能写更新目录。另一台 LAN 客户端尚未实测。
+Mac mini 上已执行 `Project/Windows/scripts/Setup-LanUpdateServer.sh`：创建 `/usr/local/var/www/feige-updates/windows/stable/versions`，在现有 nginx `server` 中加入 `location /updates/`，经 `nginx -t` 验证后 reload。缺失清单返回 HTTP 404，写请求返回 403；配置会备份到 `/usr/local/etc/nginx/`（不在 nginx `servers/*` include 目录中）。nginx 进程仍监听 `*:8080`，更新 location 由 `allow 192.168.50.0/24` / `deny all` 限制访问；发布 SSH 用户需要能写更新目录。macOS 使用独立的 `/usr/local/var/www/feige-updates/macos/stable/versions` 与独立 P-256 信任根，0.4.0 build 11 已发布并由本机 macOS 客户端完成应用内更新及关闭提示验收；Windows 客户端的另一台 LAN 实机仍待测试。Mac mini 系统版本低于 macOS 应用最低要求，仅作文件服务器。
 
 健康检查可访问：
 

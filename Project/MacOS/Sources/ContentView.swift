@@ -1,3 +1,4 @@
+import FeigeIdentity
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -7,13 +8,14 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedPeerID: String?
     @State private var selectedDeviceID: String?
-    @State private var drafts: [String: String] = [:]
     @State private var showManualConnection = false
     @State private var pendingDevice: LANDevice?
     @State private var showHistory = false
     @State private var dropTargeted = false
     @State private var pendingDeletePeerID: String?
     @State private var showConnectionHelp = false
+    @State private var showUsageHelp = false
+    @State private var showEmojiPalette = false
 
     private var currentPeerID: String { selectedDeviceID == nil ? (selectedPeerID ?? model.connectedPeerID) : "" }
     private var currentPeer: ChatPeer? { model.chatPeers.first { $0.id == currentPeerID } }
@@ -26,7 +28,7 @@ struct ContentView: View {
     private var viewingConnected: Bool { model.isConnected && currentPeerID == model.connectedPeerID }
     private var draftKey: String { currentPeerID.isEmpty ? (selectedDeviceID ?? "") : currentPeerID }
     private var draft: Binding<String> {
-        Binding(get: { drafts[draftKey] ?? "" }, set: { drafts[draftKey] = $0 })
+        Binding(get: { model.drafts[draftKey] ?? "" }, set: { model.setDraft($0, for: draftKey) })
     }
     private var visibleMessages: [ChatMessage] { model.messages.filter { $0.peerID == currentPeerID } }
     private var undisplayedDevices: [LANDevice] {
@@ -38,7 +40,6 @@ struct ContentView: View {
             sidebar
             Divider()
             VStack(spacing: 0) {
-                if model.settings.firstRunComplete && !model.isIdentityReady { identityAuthorizationBanner }
                 if !model.settings.firstRunComplete && !model.isFirstRun {
                     HStack {
                         Label("首次设置尚未完成", systemImage: "info.circle").font(.caption)
@@ -46,6 +47,7 @@ struct ContentView: View {
                         Button("继续设置") { model.isFirstRun = true }.buttonStyle(.borderless)
                     }.padding(.horizontal, 18).padding(.vertical, 9).background(Color.accentColor.opacity(0.07))
                 }
+                GuidancePanel()
                 conversationHeader
                 Divider()
                 timeline
@@ -61,12 +63,14 @@ struct ContentView: View {
             SendView { device in pendingDevice = device; showManualConnection = false }.environmentObject(model)
         }
         .sheet(isPresented: $showHistory) { historySheet }
-        .sheet(isPresented: $showConnectionHelp) { ConnectionHelpView() }
+        .sheet(isPresented: $showConnectionHelp) { ConnectionHelpView(mode: .troubleshooting) }
+        .sheet(isPresented: $showUsageHelp) { ConnectionHelpView(mode: .usage) }
         .sheet(isPresented: $model.isFirstRun) { SetupView(isFirstRun: true).environmentObject(model).interactiveDismissDisabled() }
         .alert("飞鸽快传", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.clearError() } })) {
             if model.shouldSuggestNetworkHelp {
                 Button("连接排查") { model.clearError(); showConnectionHelp = true }
             }
+            Button("使用帮助") { model.clearError(); showUsageHelp = true }
             Button("好", role: .cancel) { model.clearError() }
         } message: { Text(model.errorMessage ?? "") }
         .confirmationDialog("删除此会话记录？", isPresented: Binding(
@@ -81,22 +85,9 @@ struct ContentView: View {
         .onChange(of: model.connectedPeerID) { id in
             if !id.isEmpty { selectedPeerID = id; selectedDeviceID = nil }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .feigeOpenSettings)) { _ in openWindow(id: "settings") }
+        .onReceive(NotificationCenter.default.publisher(for: .feigeOpenUpdates)) { _ in openWindow(id: "settings") }
         .task { await model.start() }
-    }
-
-    private var identityAuthorizationBanner: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if model.isPreparingIdentity { ProgressView().controlSize(.small).padding(.top, 3) }
-            else { Image(systemName: "lock.shield").foregroundStyle(Color.accentColor) }
-            VStack(alignment: .leading, spacing: 5) {
-                Text(model.isPreparingIdentity ? "正在准备安全连接" : "请先完成系统授权")
-                    .font(.system(size: 13, weight: .medium))
-                Text(model.identityPreparationError ?? "如出现 macOS 钥匙串弹窗，请输入登录密码并选择“始终允许”，避免后续连接重复询问。")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-            if !model.isPreparingIdentity { Button("重新授权") { Task { await model.start() } } }
-        }.padding(16).background(Color.accentColor.opacity(0.07))
     }
 
     private var sidebar: some View {
@@ -161,7 +152,8 @@ struct ContentView: View {
                 Button { showManualConnection = true } label: { Label("手动连接", systemImage: "network") }
                     .disabled(!model.isIdentityReady || model.isConnected || model.isConnecting)
                 Button { showHistory = true } label: { Label("传输记录", systemImage: "clock.arrow.circlepath") }
-                Button { showConnectionHelp = true } label: { Label("连接排查", systemImage: "questionmark.circle") }
+                Button { showConnectionHelp = true } label: { Label("连接排查", systemImage: "network.badge.shield.half.filled") }
+                Button { showUsageHelp = true } label: { Label("使用帮助", systemImage: "questionmark.circle") }
                 Divider()
                 HStack(spacing: 8) {
                     Image(systemName: "laptopcomputer").foregroundStyle(Color.accentColor)
@@ -245,9 +237,11 @@ struct ContentView: View {
                     }
                     ForEach(visibleMessages, id: \.rowID) { message in
                         ChatMessageView(message: message,
-                                        canRetry: viewingConnected && (message.kind == .text ? !model.isSendingText : !model.isSending)) {
-                            model.retryMessage(message)
-                        }.id(message.rowID)
+                                        canRetry: viewingConnected && (message.kind == .text ? !model.isSendingText : !model.isSending),
+                                        retry: { model.retryMessage(message) },
+                                        accept: { model.decideIncomingFile(message.id, accepted: true) },
+                                        decline: { model.decideIncomingFile(message.id, accepted: false) })
+                            .id(message.rowID)
                     }
                     Color.clear.frame(height: 1).id("conversation-bottom")
                 }.padding(24)
@@ -265,6 +259,15 @@ struct ContentView: View {
                     .disabled(!viewingConnected || model.isSending)
                 Button { model.chooseAndSendFiles() } label: { Label("文件", systemImage: "paperclip") }
                     .disabled(!viewingConnected || model.isSending)
+                Button { showEmojiPalette.toggle() } label: { Label("表情", systemImage: "face.smiling") }
+                    .disabled(!viewingConnected)
+                    .popover(isPresented: $showEmojiPalette, arrowEdge: .bottom) {
+                        EmojiPaletteView { emoji in
+                            let key = draftKey
+                            model.setDraft(EmojiPalette.append(emoji, to: model.drafts[key] ?? ""), for: key)
+                        }
+                    }
+                    .help("插入表情（也可用 ⌃⌘Space 系统表情面板）")
                 Spacer()
                 if viewingConnected && (model.isSending || model.isReceivingFile) {
                     Button("取消传输") { model.cancelTransfer() }.help("取消会断开当前连接，未完成文件会被清理")
@@ -302,7 +305,15 @@ struct ContentView: View {
     private func sendDraft() {
         guard viewingConnected else { return }
         let key = draftKey
-        if model.sendText(drafts[key] ?? "") { drafts[key] = "" }
+        let text = draft.wrappedValue
+        if model.sendText(text) {
+            model.clearDraft(for: key)
+            return
+        }
+        // A rejected send (empty, empty newline or longer than 8 KB) keeps the draft and explains why.
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (try? ChatText(text: text)) == nil {
+            model.errorMessage = "单条文字最多 8 KB UTF-8；长文可作为文件发送。"
+        }
     }
 
     private var approvalSheet: some View {

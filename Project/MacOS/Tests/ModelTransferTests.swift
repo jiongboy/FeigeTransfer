@@ -46,7 +46,8 @@ final class ModelTransferTests: XCTestCase {
             files.append(file)
         }
 
-        // Simulate the single recipient click; the requester must never be prompted.
+        // Simulate the recipient's clicks; the requester must never be prompted. A file only starts
+        // after the receiver confirms it, so the loop answers that prompt too.
         var approvalsCount = 0
         let approvals = Task { @MainActor in
             while !Task.isCancelled {
@@ -55,12 +56,20 @@ final class ModelTransferTests: XCTestCase {
                     approvalsCount += 1
                     receiver.approveConnection(acceptConnection)
                 }
+                // Either side can receive a file, so both are answered; only the receiver is asked
+                // about the connection itself.
+                for message in receiver.messages where message.status == .awaitingApproval {
+                    receiver.decideIncomingFile(message.id, accepted: acceptConnection)
+                }
+                for message in sender.messages where message.status == .awaitingApproval {
+                    sender.decideIncomingFile(message.id, accepted: acceptConnection)
+                }
                 do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
             }
         }
         defer { approvals.cancel() }
         sender.requestConnection(to: device)
-        let deadline = Date().addingTimeInterval(20)
+        let deadline = Date().addingTimeInterval(45)
         while (sender.isConnecting || receiver.isConnecting), Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

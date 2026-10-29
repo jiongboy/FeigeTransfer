@@ -19,6 +19,7 @@ let package = Package(
                 .linkedFramework("Network"),
                 .linkedFramework("Security"),
                 .linkedFramework("PDFKit"),
+                .linkedFramework("UserNotifications"),
                 .linkedLibrary("z")
             ]
         ),

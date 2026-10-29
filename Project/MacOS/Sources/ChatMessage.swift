@@ -2,7 +2,8 @@ import Foundation
 
 struct ChatMessage: Identifiable, Codable, Equatable {
     enum Kind: String, Codable { case text, image, file }
-    enum Status: String, Codable { case queued, sending, delivered, received, failed }
+    /// `awaitingApproval` is the receiver-side state before the user accepts or declines a file.
+    enum Status: String, Codable { case queued, awaitingApproval, sending, delivered, received, declined, failed }
     var id = UUID()
     var peerID: String
     var peerName: String
@@ -18,7 +19,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var failureReason: String? = nil
 
     var rowID: String { "\(peerID):\(direction.rawValue):\(kind.rawValue):\(id)" }
-    var isPending: Bool { status == .queued || status == .sending }
+    var isPending: Bool { status == .queued || status == .awaitingApproval || status == .sending }
     var preview: String {
         switch kind {
         case .text: text ?? "文字消息"

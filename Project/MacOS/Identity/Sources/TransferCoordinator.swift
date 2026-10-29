@@ -48,6 +48,8 @@ public struct FileManifest: Codable, Equatable, Sendable {
 
 public enum TransferCoordinatorError: LocalizedError {
     case invalidManifest, wrongMessage, invalidDecision, interrupted, checksumMismatch, alreadyFinished, sinkFailure
+    /// The receiver explicitly declined the file, so the connection closes without a false success.
+    case rejectedByReceiver
     public var errorDescription: String? {
         switch self {
         case .invalidManifest: "文件清单无效或超出限制。"
@@ -57,6 +59,7 @@ public enum TransferCoordinatorError: LocalizedError {
         case .checksumMismatch: "文件完整性校验失败。"
         case .alreadyFinished: "此传输会话已结束。"
         case .sinkFailure: "无法写入接收暂存文件。"
+        case .rejectedByReceiver: "已拒绝接收该文件。"
         }
     }
 }

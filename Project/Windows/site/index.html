@@ -183,10 +183,10 @@
     <h1>把文件直接送到<br>另一台电脑</h1>
     <p class="tagline">飞鸽快传是一个局域网内直接互传的桌面应用。不经过云端、不用登录，同一个网络下就能发送文字、图片和文件。</p>
     <div class="actions">
-      <a class="btn btn-primary" href="#download">下载 Windows 版</a>
+      <a class="btn btn-primary" href="#download">下载应用</a>
       <a class="btn btn-ghost" href="#how">看看怎么用</a>
     </div>
-    <p class="hero-meta" id="heroMeta">适用于 Windows 10 / 11</p>
+    <p class="hero-meta" id="heroMeta">支持 Windows 10 / 11 与 macOS 13+（Apple Silicon）</p>
   </div>
 </header>
 
@@ -255,7 +255,7 @@
   <div class="wrap">
     <p class="kicker">下载</p>
     <h2>选择适合你的版本</h2>
-    <p class="lead">Windows 版为独立安装程序，无需额外安装运行库。</p>
+    <p class="lead">提供 Windows 10 / 11 和 macOS 13+（Apple Silicon）版本。</p>
 
     <div class="dl-card" id="dlCard">
       <div class="dl-left">
@@ -270,6 +270,20 @@
       </div>
     </div>
     <p class="hint" id="dlHint"></p>
+
+    <div class="dl-card" id="mac-download">
+      <div class="dl-left">
+        <img src="assets/icon-256.png" alt="">
+        <div>
+          <h3>飞鸽快传 for macOS<span class="badge" id="macDlBadge">Apple Silicon</span></h3>
+          <div class="meta" id="macDlMeta">正在获取版本信息…</div>
+        </div>
+      </div>
+      <div class="dl-actions">
+        <a class="btn btn-primary" id="macDlBtn" href="#mac-download">下载 Mac 版</a>
+      </div>
+    </div>
+    <p class="hint" id="macDlHint">需要 macOS 13 或更新版本，适用于 Apple Silicon（M 系列）。下载后解压，将 app 拖入“应用程序”。当前包尚未经过 Apple 公证，首次打开时请按 macOS 提示授权。</p>
   </div>
 </section>
 
@@ -292,7 +306,7 @@
       </details>
       <details>
         <summary>支持哪些系统？</summary>
-        <p>当前提供 Windows 10 / 11 版本，需要 64 位系统。Windows 10 需 1809 及以上版本。</p>
+        <p>提供 Windows 10 / 11 64 位版本（Windows 10 需 1809 及以上），以及 macOS 13 或更新版本的 Apple Silicon 版本。</p>
       </details>
       <details>
         <summary>怎么更新到新版本？</summary>
@@ -346,8 +360,6 @@ loadRelease().then(r => {
     `版本 ${r.version} · ${fmtSize(r.size)} · Windows 10 / 11 64 位`;
   document.getElementById('dlBtn').href = r.downloadUrl;
   document.getElementById('dlBtn').setAttribute('download', name);
-  document.getElementById('heroMeta').textContent =
-    `适用于 Windows 10 / 11 · 最新版本 ${r.version}`;
   const label = r.channel === 'stable' ? '正式版' : '预览版（内部测试）';
   document.getElementById('dlHint').innerHTML =
     `下载完成后运行安装程序即可。当前为${label}，文件名 <code>${name.replace(/[<&>]/g, '')}</code>。`;
@@ -357,7 +369,39 @@ loadRelease().then(r => {
   document.getElementById('dlBtn').setAttribute('aria-disabled', 'true');
   document.getElementById('dlBtn').href = '#download';
   document.getElementById('dlHint').textContent = '';
-  document.getElementById('footNote').textContent = '下载服务暂不可用';
+  document.getElementById('footNote').textContent = 'Windows 下载服务暂不可用';
+});
+
+async function loadMacRelease() {
+  const response = await fetch('../updates/macos/stable/feige-macos-update.json', { cache: 'no-store' });
+  if (!response.ok) throw new Error('macOS manifest unavailable');
+  const envelope = await response.json();
+  const payload = JSON.parse(b64utf8(envelope.payload));
+  const releases = (payload.releases || []).filter(r => r.platform === 'macos' && r.architecture === 'arm64');
+  if (!releases.length) throw new Error('no Apple Silicon release');
+  return releases.sort((a, b) => b.build - a.build)[0];
+}
+
+loadMacRelease().then(r => {
+  const downloadURL = new URL(r.downloadUrl || '', window.location.href);
+  if (downloadURL.origin !== window.location.origin ||
+      !downloadURL.pathname.startsWith('/updates/macos/stable/versions/')) {
+    throw new Error('download URL outside the macOS stable update directory');
+  }
+  const name = decodeURIComponent(downloadURL.pathname.split('/').pop() || '');
+  document.getElementById('macDlBadge').textContent = 'Apple Silicon';
+  document.getElementById('macDlMeta').textContent =
+    `版本 ${r.version} · ${fmtSize(r.size)} · macOS 13+ · Apple Silicon`;
+  const button = document.getElementById('macDlBtn');
+  button.href = downloadURL.href;
+  button.setAttribute('download', name);
+  document.getElementById('macDlHint').insertAdjacentText('afterbegin', `正式版 · ${name}。`);
+}).catch(() => {
+  document.getElementById('macDlMeta').textContent = 'Mac 版本暂时无法获取，请稍后再试';
+  const button = document.getElementById('macDlBtn');
+  button.style.opacity = '.5';
+  button.setAttribute('aria-disabled', 'true');
+  button.href = '#mac-download';
 });
 </script>
 </body>

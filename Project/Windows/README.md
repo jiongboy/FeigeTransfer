@@ -12,6 +12,8 @@ dotnet test .\tests\Feige.Core.Tests\Feige.Core.Tests.csproj
 
 Development scripts are under `scripts/`. EXE and MSIX packaging require a Windows host; final outputs go under the repository-adjacent `Release/` folder. Do not create delivery packages unless the user explicitly requests packaging after reviewing changes.
 
+Debug locally with a self-signed MSIX first, then sign and package releases on the release machine. The full flow, including why an unsigned bare executable cannot start under the local code-integrity policy, is in [Local debug and release flow](../Docs/Windows/LocalDebugAndRelease.md).
+
 ## Project status and release notes
 
 - [Project overview](../Docs/Windows/ProjectOverview.md)
