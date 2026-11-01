@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 public enum AuthenticatedStreamError: LocalizedError {
-    case truncated, tooLarge, invalidFrame, unexpectedEOF, timeout, alreadyFinished
+    case truncated, tooLarge, invalidFrame, unexpectedEOF, timeout, alreadyFinished, cancelled
     public var errorDescription: String? {
         switch self {
         case .truncated: "认证流帧被截断。"
@@ -11,6 +11,7 @@ public enum AuthenticatedStreamError: LocalizedError {
         case .unexpectedEOF: "认证流在完成前结束。"
         case .timeout: "局域网传输超时。"
         case .alreadyFinished: "认证流已经结束。"
+        case .cancelled: "本次操作已取消，连接保持打开。"
         }
     }
 }

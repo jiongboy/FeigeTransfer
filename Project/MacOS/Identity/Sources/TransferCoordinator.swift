@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-public enum TransferMessageType: UInt8, Codable {
+public enum TransferMessageType: UInt8, Codable, Sendable {
     case manifest = 1
     case decision = 2
     case chunk = 3
@@ -12,6 +12,12 @@ public enum TransferMessageType: UInt8, Codable {
     case connectionDecision = 8
     case text = 9
     case textReceipt = 10
+    case groupControl = 11
+    case groupText = 12
+    case groupTextAck = 13
+    case groupManifest = 14
+    case groupFileDecision = 15
+    case groupFileReceipt = 16
 }
 
 public struct FileManifest: Codable, Equatable, Sendable {

@@ -165,6 +165,89 @@ public sealed class DiscoveryTests
         (string name, string? fingerprint) = FeigeService.ParseTxt(txt);
         Assert.Equal("Win-A", name);
         Assert.Equal("AABBCC", fingerprint);
+
+        string fullFingerprint = new('A', 64);
+        DnsName v3Instance = FeigeService.InstanceName("Win-A", fullFingerprint, version: 3);
+        DnsName v4Instance = FeigeService.InstanceName("Win-A", fullFingerprint, version: 4);
+        Assert.Equal("Feige-" + fullFingerprint[..20], v3Instance.FirstLabel);
+        Assert.Equal("Feige4-" + fullFingerprint[..20], v4Instance.FirstLabel);
+        Assert.NotEqual(v3Instance, v4Instance);
+        Assert.Equal(FeigeService.Type, new DnsName(v3Instance.Labels.Skip(1)));
+        Assert.Equal(FeigeService.Type, new DnsName(v4Instance.Labels.Skip(1)));
+
+        IReadOnlyList<string> v4Txt = FeigeService.BuildTxt("Win-A", fullFingerprint, version: 4);
+        Assert.Contains("v=4", v4Txt);
+        Assert.Contains("caps=3,4,5", v4Txt);
+        Assert.Equal(4, FeigeService.ParseProtocolVersion(v4Txt));
+        Assert.Equal(3, FeigeService.ParseProtocolVersion(["version=3", "name=Win-A"]));
+        Assert.Equal(1, FeigeService.ParseProtocolVersion(txt));
+
+        (string macName, string? macFingerprint) = FeigeService.ParseTxt([
+            "v=3", "name=Mac-A", $"fp={fullFingerprint}", "caps=3,4"]);
+        Assert.Equal("Mac-A", macName);
+        Assert.Equal(fullFingerprint, macFingerprint);
+        IReadOnlySet<int> macVersions = FeigeService.ParseSupportedVersions([
+            "v=3", "name=Mac-A", $"fp={fullFingerprint}", "caps=3,4,5"]);
+        Assert.Equal(3, macVersions.Count);
+        Assert.Contains(3, macVersions);
+        Assert.Contains(4, macVersions);
+        Assert.Contains(5, macVersions);
+    }
+
+    [Fact]
+    public void Discovery_AdvertisedTxtRoundTripsThroughTheSameRulesMacUses()
+    {
+        // macOS advertises TXT entries as "name", "v" and "caps" (its "fp" key is not read by
+        // Windows today), so the fingerprint must come from the fingerprinted instance label.
+        // Whatever Windows advertises must parse back identically, and the self-ignore rule that
+        // keeps a device from listing itself must see the same instance label from both sides.
+        string fullFingerprint = new('B', 64);
+        string compactFingerprint = fullFingerprint.Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
+
+        IReadOnlyList<string> macAdvert = ["v=3", "caps=3,4,5", "name=Mac-A", $"fp={compactFingerprint}"];
+        Assert.Equal(3, FeigeService.ParseProtocolVersion(macAdvert));
+        Assert.Equal(new[] { 3, 4, 5 }, FeigeService.ParseSupportedVersions(macAdvert).OrderBy(item => item));
+        Assert.Equal(new[] { 3 }, FeigeService.ParseSupportedVersions(["v=3", "caps=3", "name=Mac-B"]).OrderBy(item => item));
+        DnsName macInstance = FeigeService.InstanceName("Mac-A", fullFingerprint, version: 3);
+        Assert.Equal("Feige-" + compactFingerprint[..20], macInstance.FirstLabel);
+        Assert.Equal(macInstance, FeigeService.InstanceName("Mac-A", compactFingerprint, version: 3));
+
+        foreach (int version in new[] { 3, 4 })
+        {
+            IReadOnlyList<string> txt = FeigeService.BuildTxt("Win-Acceptance", fullFingerprint.WithSpaces(), version);
+            (string name, string? fingerprint) = FeigeService.ParseTxt(txt);
+            IReadOnlySet<int> versions = FeigeService.ParseSupportedVersions(txt);
+            Assert.Equal("Win-Acceptance", name);
+            Assert.Contains(version, versions);
+            // Only the group-capable v4 advertisement carries the fingerprint and the 3,4,5 caps;
+            // the legacy v3 record keeps its historical "version=/name=" shape.
+            if (version == 4)
+            {
+                Assert.Equal(compactFingerprint, fingerprint);
+                Assert.Contains(3, versions);
+                Assert.Contains(4, versions);
+                Assert.Contains(5, versions);
+            }
+        }
+
+        // Windows names v3 and v4 advertisements differently (Feige- / Feige4-) and browses both
+        // labels; both platforms derive the label from the same compact fingerprint.
+        Assert.Equal("Feige-" + compactFingerprint[..20],
+            FeigeService.InstanceName("Win-Acceptance", fullFingerprint, version: 3).FirstLabel);
+        Assert.Equal("Feige4-" + compactFingerprint[..20],
+            FeigeService.InstanceName("Win-Acceptance", fullFingerprint, version: 4).FirstLabel);
+        Assert.Equal(macInstance.FirstLabel,
+            FeigeService.InstanceName("Win-Acceptance", compactFingerprint, version: 3).FirstLabel);
+    }
+
+    [Fact]
+    public void DiscoveredPeer_ExposesAReadableAccessibleName()
+    {
+        var peer = new DiscoveredPeer(new DnsName(["Feige-ABC", "_feige", "_tcp", "local"]), "Songli", null,
+            new System.Net.IPEndPoint(System.Net.IPAddress.Parse("192.168.1.10"), 51_001));
+        Assert.Equal("Songli，192.168.1.10:51001，指纹待握手确认", peer.AccessibleName);
+        Assert.Equal(peer.AccessibleName, peer.ToString());
+        Assert.DoesNotContain("DiscoveredPeer {", peer.ToString());
     }
 
     [Fact]
@@ -224,6 +307,7 @@ public sealed class DiscoveryTests
         await a.StartAsync(); await b.StartAsync();
         await WaitUntilAsync(() => a.Peers.Count == 1 && b.Peers.Count == 1, "V3 devices did not discover one another");
         Assert.Equal("Feige-" + identityA.Fingerprint.Replace(" ", "")[..20], a.Advertiser.InstanceName.FirstLabel);
+        Assert.Equal(3, b.Peers[0].ProtocolVersion);
         Assert.Contains("version=3", a.Advertiser.Txt);
         Assert.DoesNotContain(a.Advertiser.Txt, entry => entry.StartsWith("v=") || entry.StartsWith("fp="));
         Assert.Null(b.Peers[0].Fingerprint); // Only the signed handshake authenticates a v3 peer.
@@ -242,6 +326,45 @@ public sealed class DiscoveryTests
         Assert.Single(a.Peers); Assert.Single(b.Peers);
         await a.DisposeAsync();
         await WaitUntilAsync(() => b.Peers.Count == 0, "V3 goodbye did not remove the peer");
+    }
+
+    [Fact]
+    public async Task DualVersionDiscovery_AdvertisesBothVersionsAndIgnoresBothLocalInstances()
+    {
+        using var identityA = IdentityKey.Create();
+        using var identityB = IdentityKey.Create();
+        var network = new MemoryNetwork();
+        var addressA = IPAddress.Parse("192.168.1.10");
+        var addressB = IPAddress.Parse("192.168.1.11");
+        await using var a = new LanDiscovery(new LocalDevice(identityA, "Same name"), 51011, 51012,
+            network.Connect(new IPEndPoint(addressA, 5353)), [addressA]);
+        await using var b = new LanDiscovery(new LocalDevice(identityB, "Same name"), 51021, 51022,
+            network.Connect(new IPEndPoint(addressB, 5353)), [addressB]);
+
+        Assert.Equal(FeigeService.Type, new DnsName(a.V3Advertiser!.InstanceName.Labels.Skip(1)));
+        Assert.Equal(FeigeService.Type, new DnsName(a.V4Advertiser!.InstanceName.Labels.Skip(1)));
+        Assert.NotEqual(a.V3Advertiser.InstanceName, a.V4Advertiser.InstanceName);
+        Assert.Equal(2, a.Advertisers.Count);
+        Assert.Equal(a.V3Advertiser, a.Advertiser);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await WaitUntilAsync(() => a.Peers.Count == 2 && b.Peers.Count == 2,
+            "dual-version peers did not discover both remote instances");
+
+        Assert.Equal([3, 5], a.Peers.Select(peer => peer.ProtocolVersion).Order().ToArray());
+        Assert.Equal([3, 5], b.Peers.Select(peer => peer.ProtocolVersion).Order().ToArray());
+        Assert.All(a.Peers, peer => Assert.Equal("Same name", peer.DeviceName));
+        Assert.All(b.Peers, peer => Assert.Equal("Same name", peer.DeviceName));
+        Assert.Equal(51021, a.Peers.Single(peer => peer.ProtocolVersion == 3).EndPoint.Port);
+        Assert.Equal(51022, a.Peers.Single(peer => peer.ProtocolVersion >= 4).EndPoint.Port);
+        Assert.Equal(51011, b.Peers.Single(peer => peer.ProtocolVersion == 3).EndPoint.Port);
+        Assert.Equal(51012, b.Peers.Single(peer => peer.ProtocolVersion >= 4).EndPoint.Port);
+        Assert.DoesNotContain(a.Peers, peer => a.Advertisers.Any(local => local.InstanceName == peer.Instance));
+        Assert.DoesNotContain(b.Peers, peer => b.Advertisers.Any(local => local.InstanceName == peer.Instance));
+
+        await a.DisposeAsync();
+        await WaitUntilAsync(() => b.Peers.Count == 0, "dual-version goodbyes did not remove both peers");
     }
 
     [Theory]
@@ -463,4 +586,11 @@ public sealed class DiscoveryTests
             }
         }
     }
+}
+
+file static class DiscoveryTestText
+{
+    /// <summary>Same layout the device identity prints: groups of four hex digits.</summary>
+    public static string WithSpaces(this string compact) =>
+        string.Join(' ', Enumerable.Range(0, compact.Length / 4).Select(i => compact.Substring(i * 4, 4)));
 }

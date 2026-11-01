@@ -15,6 +15,101 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-01 当前源码 x64 Release 编译与回归
+
+- **环境与隔离**：Parallels Windows 11 ARM64 / .NET SDK 10.0.402。通过来宾共享目录将当前 `Project/Windows/` 源码暂存到唯一临时目录 `C:\Windows\Temp\FeigeReleaseX64Check-20261101-C4A7D291`；排除 `bin/obj/dist/.git/TestResults` 和既有验收临时目录，公共协议测试向量单独复制。未使用 ROG，也未安装或启动应用。
+- **x64 编译**：`Feige.App.csproj` Release，目标 `Platform=x64`、`RuntimeIdentifier=win-x64`；显式禁用 MSIX tooling、Appx 生成及 Windows package type。编译通过，0 警告、0 错误；输出为 `win-x64` 目录下的应用程序集，不是发行包。
+- **回归**：当前暂存源码 `Feige.Core.Tests` **578/578** 通过；`Feige.App.Tests` **8/8** 通过并启用 `FeigeTestIsolation=true`。测试在该 Windows ARM64 VM 的现有 ARM64 .NET host 上运行。Core 测试编译有一条 nullable warning `UpdateMultiSourceTests.cs(81,42)`，不影响测试结果。
+- **x64 运行时限制**：将测试目标设为 `win-x64` 可编译测试程序集，但运行器提示未安装 X64 `dotnet.exe` host，测试未启动。未安装额外运行时。
+- **清理与范围**：临时树扫描未发现 `.msix/.appx` 或 `FeigeSetup-*.exe`；确认绝对路径后删除临时源码和构建树。没有生成发行包、安装包或改动用户资料/安全配置。
+- **仍待完成**：Windows 签名包与更新端到端验收、macOS Developer ID 公证/Gatekeeper、受支持平台组合实体双端矩阵及完整网络边界验收。20 台实体设备不是发布门槛。
+
+## 2026-11-01 实体 Mac 与 ROG 可达性复查
+
+- **Home mini**：经 SSH/SFTP 可达；从 `/System/Library/CoreServices/SystemVersion.plist` 确认 macOS `12.7.6`（build `21H1320`），低于项目 macOS 13 目标；标准路径 `/Applications/Feige.app/Contents/Info.plist` 不存在。本次仅只读检查，未在设备上安装或修改资料。
+- **Ivy mini**：`192.168.50.229` 的 SSH/SFTP 连接仍超时，当前不可用于实体 LAN 测试。
+- **ROG**：经 FRP STCP SSH 可达，WLAN 地址为 `192.168.50.202`；`Get-AppxPackage -Name FeigeTransfer.Windows` 返回未安装。遵守“不在 ROG 安装测试包”的约束，没有安装包或更改用户资料。
+- **结论**：本轮没有新增实体设备 LAN 验收；Mac↔Mac 与 Windows↔Windows 仍受上述设备条件限制，20-peer 结果仍是单台 Mac 宿主上的 19 个隔离 runtime 加一个 Parallels Windows owner，不代表 20 台实体设备。
+
+## 2026-11-01 Windows 群主 20 人 LAN 群组与广播验收通过
+
+- **拓扑与范围**：Windows 11 ARM64 Parallels guest `10.211.55.4` 运行 `FeigeTransfer.Windows_1.2.0.1_arm64__fmc2zrmw36x2p`；Mac 宿主 `192.168.50.197` 上的 19 个隔离 macOS `TransferModel` runtime 经 guest-side source route `10.211.55.2` 连接 Windows v4 listener `59060/TCP`。这是 1 个 Windows app owner 加 19 个同宿主 Mac runtime，不是 20 台实体 LAN 设备。
+- **结果**：19/19 runtime 建立连接用时 `43.169 s`；Windows UI 创建群组 `FeigeLAN20-20261101-1836`（ID `5037E2E6-AB34-4A85-89AB-E2E00ABDADFE`）后，20 人成员表在所有 runtime 收敛用时 `337.703 s`；广播 `lan20-broadcast-20261101-1836` 被 19/19 runtime 收到。`PhysicalLan20GroupAcceptanceTests/testWindowsUiCreatesTwentyMemberGroupAndBroadcastsOverLANWhenConfigured` **1/1 通过（676.361 秒）**。首次自动化运行在等待 Windows 连接授权 `224.120 s` 后超时且未创建群组；调整 UIA 匹配后重跑通过。
+- **防火墙与用户资料**：验收期间仅允许 `10.211.55.2 → 10.211.55.4:59060/TCP`，临时停用原 Public TCP 阻断规则。结束后按已验证备份逐文件恢复 LocalState（3 个文件、21,259 字节，manifest 完全匹配）；Settings 显示的设备指纹仍为 `4C28 565E 4FBB 0F11 DA34 8EF7 EAA5 7163 8539 0224 C606 9557 BD5E 726D 6610 0A55`。原 TCP 阻断已重新启用，临时允许规则已删除，UDP 阻断保持启用；app log 确认应用重新启动并监听 `50505/50506`。
+- **实体设备覆盖限制**：未完成物理 Mac↔Mac：Home mini 为 macOS `12.7.6`，低于项目 macOS 13 目标；Ivy mini `192.168.50.229` 不可达。未完成物理 Windows↔Windows：ROG 未安装 Feige 测试包，本轮没有在 ROG 安装。因此本验收只覆盖单台 Mac 宿主上的 Parallels Windows↔19 个隔离 Mac runtime 路径。
+- **清理**：删除本轮 Windows scheduled tasks、guest runRoot 与 profile backup，以及本机 `.tmp-lan20-20261101-1836/` 和临时 Swift acceptance test；保留既有 `.tmp-acceptance-D7598477/`。ROG 未安装测试包。
+
+## 2026-11-01 Windows 群主实际 UI 创建与成员增删 LAN 验收通过
+
+- **环境**：Parallels Windows 11 ARM64 guest `10.211.55.4`，macOS 宿主经 `bridge100` (`10.211.55.2`) 连接。为安装本轮修复，Windows 包身份从 `1.2.0.0` 升级为 `1.2.0.1`，当前仍安装 `1.2.0.1`；`app.log` 报告应用版本 `1.2.1.0`、v3/v4 listener `56286/56287`。升级保留原用户资料，DPAPI 设备指纹仍为 `4C28 565E 4FBB 0F11 DA34 8EF7 EAA5 7163 8539 0224 C606 9557 BD5E 726D 6610 0A55`。
+- **连通性与防火墙**：Mac 到 guest 的 TCP `56287` 初次超时。guest 的 Public profile 中存在针对新包路径的 Feige.App TCP `Block` 规则（任意远端地址/端口）。验收期间仅对当前应用开放 `10.211.55.2 → 10.211.55.4:56287/TCP`；`nc` 确认连通。结束后删除临时允许规则并重新启用原阻断规则，复核无临时规则残留。
+- **实际 UI 流程**：UI Automation 在 Windows 接受两个 macOS 测试 runtime 的连接请求；Windows 群组页创建 `FeigeGroupD7598477Fix1` 并邀请 runtime 1，随后添加 runtime 2（群组标题显示 3 名成员），再移除 runtime 2（标题回到 2 名成员，runtime 1 保留）。群组 ID：`F3F60E4B-522E-4BD4-8746-4CDB3F224924`。群组成员指纹比较统一去空格并转大写，使紧凑与四位分组格式一致。
+- **LAN 验证**：macOS `WindowsGroupManagementAcceptanceTests/testWindowsUiGroupCreateAddAndRemoveOverLANWhenConfigured` **1/1 通过（138.590 秒）**；测试输出确认 `WINDOWS_GROUP_MANAGEMENT_DONE|F3F60E4B-522E-4BD4-8746-4CDB3F224924`。
+- **覆盖范围**：两名 macOS `TransferModel` 隔离 runtime 与一台 Parallels Windows 实例互通；没有覆盖实体 Mac↔Mac、Windows↔Windows，也没有执行 20 个实体 LAN peer。独立的 ROG 回环容量基线 `RealV4Sockets_HoldTwentyDirectAndNineteenGroupOnlyPeers` 通过 39 条已认证 loopback 连接（20 direct + 19 group-only）：271 ms、进程 CPU 1,625 ms、工作集 91.1 MiB（delta +7.7 MiB）、托管堆 +4.0 MiB、累计分配 3.7 MiB；该结果不是 20-peer 实网验收。
+- **清理与保留**：删除 ROG 本轮临时构建根目录、Windows guest 18 个本轮 scheduled tasks 和 46 个 Fix1 临时文件，以及本机 Fix1 包/助手文件；首轮失败运行证据保留。ROG 未安装测试包。签名证书安装记录为 `certificateImportedByThisRun=false`，信任库原有条目及 ROG 既有签名证书均保留。Windows 上保留升级后的 `1.2.0.1` 包、LocalState、设备指纹和群组资料；未清空用户档案。
+
+## 2026-11-01 Parallels Windows 实际 UI 与 Mac 群主邀请 LAN 验收通过
+
+- **UI 验收**：在 Windows 11 ARM64 Parallels 桌面启动本轮测试签名 MSIX；UI Automation 实际完成 Mac 连接授权，并在 Windows 群组页接受邀请 `FeigeWinInvite20261101-0143-7C9E12A6`。
+- **端口定位**：Windows app 启动日志报告 v3/v4 listener 分别为 `60222/60223`。Receive 页面显示 `session.ListenPort`（v3 的 `60222`）；群组邀请验收必须连接 v4 listener `V4ListenPort=60223`。首次误用 `60222` 后在创建群组前停止；改用 `60223` 后验收通过。后续 Mac→Windows 群组验收应使用 v4 listener。
+- **真实 LAN 验收**：`WindowsGroupManagementAcceptanceTests/testMacOwnerInvitesWindowsAndWindowsAcceptsFromItsGroupsPage` **1/1 通过（7.478 秒）**；Mac 测试输出确认 `WINDOWS_GROUP_INVITE_CHANNEL|v5|direct=true`。Windows app log 确认 `v4 accept: mounted peer=B953 867`、`attached=True` 和 `accept=True`。
+- **持久化结果**：群组 `B08D4D98-187F-4A43-8358-601A958C3ED8` 保存两名成员、revision 0，以及消息 `mac-owner-invite-C5A8A118`；群主指纹为 `B953 8675 B63B 4A43 087C 6CCB BD98 55D4 7518 0DBB 7EA2 4B9E A723 F370 131F 28D6`，Windows 成员指纹为 `9CCD 661F 3FA4 FF18 4AF8 CADB A23F C1E4 41E7 FEDB 0C5F 5C0B D54E 35F1 F2F2 84FD`。
+- **清理**：已卸载测试 MSIX 并删除新建的 package profile data；测试签名证书指纹在 CurrentUser My/TrustedPeople/Root 与 LocalMachine TrustedPeople stores 均复核无残留；临时 scheduled tasks、guest 根目录、Mac 验收根目录/结果文件及本地 helper 目录均已删除。
+
+## 2026-11-01 Parallels Windows Core 与 App 当前源码回归通过
+
+- **环境**：宿主机使用本地 Parallels CLI（无需 guest SSH）；`prlctl list -a` 显示 Windows 11 VM 正在运行，UUID `{060d2842-5af0-45af-8013-6a3998ee447e}`。guest 为 Windows 11 ARM64 build 26300，执行身份 `NT AUTHORITY\SYSTEM`，.NET SDK 10.0.402、runtime 10.0.13。
+- **源码路径**：确认 guest 可读取宿主机共享目录 `\\Mac\Home\Documents\AIWork\FeigeTransfer`。将本轮工作区的 `Feige.Core`、`Feige.Core.Tests` 和 `Docs/Public/TestVectors` 复制到唯一临时目录 `C:\Windows\Temp\FeigeTransfer-GroupPending-20261101-A7C91D4E`，在 guest 本地目录构建，未使用可能落后的 `C:\Work\FeigeTransfer` 克隆；测试完成后已删除该临时目录。
+- **定向回归**：`V4GroupConnectionRouterTests`、`V4GroupDeliveryCoordinatorTests`、`V4GroupStoreTests` **32/32 通过**。
+- **Core 全量回归**：`Feige.Core.Tests` **578/578 通过**。编译输出一条既有 nullable 警告 `UpdateMultiSourceTests.cs(81,42)`，测试无失败。
+- **Windows App 集成回归**：将当前 `Project/Windows` 工程与公共测试向量复制到新的 guest 临时目录，使用 `-p:FeigeTestIsolation=true -p:UseSharedCompilation=false` 执行 `Feige.App.Tests`，**8/8 通过**。首轮编译遇到闲置 `VBCSCompiler` 锁定 `Feige.Core.dll`（CS2012）；关闭 .NET build server 后禁用共享编译重试通过。`FEIGE_TEST_PROVISION_UI_PROFILE` 未设置，未触发可选 UI profile provisioning；临时目录已清理。
+- **范围**：该 Core/App 回归批次只执行自动化测试；当时未进行可见 UI 点击/跨端 LAN 验收或 ROG 打包，且 guest 无交互登录会话。UI 与 Mac↔Windows LAN 验收于同日后续完成，见上条。
+
+## 2026-10-31 Parallels Windows 当前源码回归通过
+
+- **环境澄清**：Windows 11 Parallels VM 正在运行，来宾共享目录能读取当前工作区源码；VM 本身可用。此次会话尝试绑定 Parallels 窗口时，桌面控制工具返回 `Computer Use permissions are not granted`，因此尚未执行群组页新建与成员增删的 UI 点击。这是当前会话权限限制，不再记作虚拟机或输入桌面不可用。
+- **Windows App 集成回归**：将当前 Windows 工程复制到来宾机临时目录，在 VM 内使用 ARM64/.NET 10 执行 `Feige.App.Tests`，**4/4 通过**，含群主建群→加成员→移除成员三端回归。
+- **Windows Core 全量回归**：在同一 VM 目录执行 `Feige.Core.Tests`，**574/574 通过**；编译输出一条既有 nullable 警告 `UpdateMultiSourceTests.cs(81,42)`，测试无失败。
+- **仍待 UI 验收**：当前 Codex 会话获得桌面控制权限后，直接操作 Parallels 可见窗口，验证 Windows 群组页新建、添加成员、移除成员的实际点击流程。
+
+## 2026-10-31 Mac 群主邀请 Windows 的真实 LAN 验收通过
+
+- **验收**：Parallels Windows ARM64 运行实例在群组页接受来自 macOS 群主的邀请；Windows 存档最终保存两名成员与 revision 0。macOS 随后发送群文字，Windows 群组消息存储收到该消息并完成成功回执。
+- **问题定位**：此前自动化用例连接到当前 Windows 实例并完成 v5 握手，但一直等待旧设备指纹 `0102…`，因此假报未连接。读取当前 DPAPI 持久身份并仅输出公钥指纹后，发现本实例指纹已更新为 `3053…D6E3`；使用当前指纹后闭环通过。
+- **网络**：macOS `NWConnection` 当前成功走 `bridge100` 到 Windows v4 端口 `59403`，未复现此前记录的 `ENETDOWN`，不需要变更 VPN 或路由设置。
+- **验证**：macOS `WindowsGroupManagementAcceptanceTests/testMacOwnerInvitesWindowsAndWindowsAcceptsFromItsGroupsPage` **1/1 通过**；Windows app log 确认 `mounted`、`attached=True` 和邀请接受；持久化群组文件包含 2 名成员及一条群文字。
+- **其他待验收**：Mac↔Mac、Windows↔Windows 实机矩阵，20 人真实 LAN 生命周期与持续负载；Windows 群组页创建/成员增删的完整实际点击流程。
+
+## 2026-10-30 服务层群主建群与成员增删回归
+
+- **新增用例** `CreateGroupThenAddMemberAndRemoveItPrefixesEachSideWithTheSameRoster`（`V4GroupAppServiceIntegrationTests`）：以 Windows 为群主走完 `CreateGroupAsync` → `ChangeMembersAsync` 加入第二成员 → `ChangeMembersAsync` 移除该成员，断言建群后为 2 人、加入后三端均为 3 人、移除后三端回到 2 人，且群主保持不变、最终 revision 为 3。
+- **覆盖价值**：群组页的“新建群组/移除成员”走的是同一组服务方法；该用例把界面上无法自动点击的操作在服务层固定下来，避免之后改事务逻辑时回归。
+- **验证**：虚拟机内 `Feige.App.Tests` **4/4 通过**（新增用例单跑 1/1 通过，约 47 秒）；本机 `Feige.Core.Tests` **574/574** 通过。
+- **未完成**：Windows 群组页的实际点击验收仍无法执行——本会话所在的隐藏桌面无法取得输入桌面（`OpenInputDesktop` 返回错误 203）。
+
+## 2026-10-30 v4/v5 发起方握手阻塞修复与群组界面验收进展
+
+- **缺陷**：`V4Connection.EstablishAsync` 的发起方路径先 `WriteFrameAsync` 写出 offer，再同步调用 `ReadFrameAsync` 等待对端 offer。传输层可能只在调用方 `await` 时才真正发出已缓冲的帧，于是本机 offer 停在本地、双方互等，表现为 Mac 侧“局域网传输超时”和 Windows 侧 `accept: InvalidDataException`。已改为先启动读取任务再写 offer。
+- **验证**：`Feige.Core.Tests` 573/573 通过；隔离构建的 Windows 实例（v3=56902、v4=56903）与两个 macOS `TransferModel` 实例完成 v5 认证握手，Windows 弹出“连接请求”，点击“同意连接”后两个会话均显示“已连接”并建立两条 TCP 连接。
+- **验收阻塞（环境）**：群组页“新建群组”按钮只能通过真实鼠标点击，而本会话无法访问输入桌面（`prlctl` 只能进入 SYSTEM 会话；`PsExec -i 1` 启动的进程可枚举并激活窗口，但鼠标事件未送达该虚拟桌面）。群创建、添加成员、移除成员的实际点击仍未完成。
+- **发现待修**：群组页空状态文案“发现和群组专用配置暂不可用”已与实际双协议发现能力不符；附近设备列表项向 UI 自动化暴露了 `DiscoveredPeer` 的 `ToString()` 全文，应改为可读名称。
+- **本轮已修复**：① `DiscoveredPeer` 新增 `AccessibleName` 并重写 `ToString()`，设备列表项现在读作“Songli，10.211.55.2:54920，指纹待握手确认”，已在实际运行实例中确认；② 群组页空状态改为“创建群组或选择已有群组。新建群组需要先与成员建立 v4/v5 连接；成员变更和文件接收都需要对方明确确认。”，同样已在运行实例中确认。新增 `DiscoveredPeer_ExposesAReadableAccessibleName`，`Feige.Core.Tests` 574/574 通过。
+- **自动化探测结论**：连接同意对话框可通过 UIA `InvokePattern` 点击；群组页“新建群组”按钮在该虚拟桌面上 `InvokePattern.Invoke()` 返回“无法识别的错误”，换算后的鼠标坐标点击也未触发 `ContentDialog`。这是隐藏桌面环境的输入限制，不是应用缺陷，因此群组创建/成员变更的界面点击必须在真实可见桌面上完成。
+
+## 2026-10-30 隔离实例身份指纹推导与 Mac 群主邀请验收
+
+- **指纹取证方式**：界面与日志都不显示本机指纹，之前无法为跨端群组测试提供对端身份。确认指纹为 `SHA-256(SPKI DER)` 分组显示后，用 `CryptUnprotectData`（与应用相同的 entropy 与 CurrentUser 作用域）在用户会话内解出 PKCS#8，仅重建公钥并计算 SHA-256；临时密钥文件用完即删。得到隔离实例指纹 `0102 2B9F A6CE 62F6 75D3 4668 E75A D731 508A 35B4 07B5 771B 3615 0608 D8BB 9EE8`。
+- **实现记录**：该流程只用于验证，未改动产品代码；Windows PowerShell 5.1 缺少 `ProtectedData` 与 `System.Formats.Asn1`，因此解密走 Win32、哈希走仓库内 .NET 10 工具。
+- **同意阶段定位（2026-10-30 补充）**：用临时诊断用例逐阶段记录，Mac 发起 v5 后依次到达 `exchangingOffers → authorizingIdentity → waitingForPeer → verified`，即 offer/proof/身份签名全部通过，Windows 也正确弹出“连接请求”；随后 Mac 在等待同意回执时收到 `unexpectedEOF`，Windows 侧同时记录 `v4 accept: TaskCanceledException`。`TaskCanceledException` 来自同意等待的 5 分钟超时（`consent.CancelAfter`），即弹窗未被点击或点击未生效，不是协议或加密缺陷。尝试用会话内 UIA 点击“同意连接”在该虚拟桌面上未生效；该确认环节仍必须在可见桌面上完成。
+- **验收进度**：新增 Mac 群主邀请用例 `testMacOwnerInvitesWindowsAndWindowsAcceptsFromItsGroupsPage`，并修正 Windows 指纹需按四位分组传入（否则 `createGroup` 抛 `invalidFingerprint`）。联调确认 Windows 能正确识别并弹出“连接请求”，邀请本身没有送达的原因是卡在同意环节（见上一条）；尚未在可见桌面上完成“同意连接 → 接受邀请”的完整闭环。
+
+## 2026-10-30 发现互通矩阵与 39 连接容量复测
+
+- **新增发现互通用例** `Discovery_AdvertisedTxtRoundTripsThroughTheSameRulesMacUses`：锁定 Windows 能读取 macOS 的 `v`/`caps` 广播（仅 `v=3` 时按 v3 选择，`caps=3,4,5` 时同时可达 3/4/5），并确认 Windows 自身 `BuildTxt` 产出的 v4 记录能被 `ParseTxt` 还原出紧凑指纹。补充记录：**macOS 广播的 `fp` 键目前不会被 Windows 读取**，Windows 侧指纹来自带指纹的实例名（`Feige-<20 位>`）；v3 旧记录保持 `version=`/`name=` 且不带指纹与 caps（历史格式不变）。
+- **容量复测**：`RealV4Sockets_HoldTwentyDirectAndNineteenGroupOnlyPeers` 在本机通过，39 条已认证回环连接耗时 56 ms、进程 CPU 373 ms、工作集 134.0 MiB（delta +12.0 MiB）、托管堆 +3.5 MiB、累计分配 3.2 MiB，并登记 20 条直连 + 19 条群组专用连接。
+- **验证**：`Feige.Core.Tests` 573/573 通过（本机 .NET 11 SDK roll-forward 运行 net10 目标）；本轮新增用例只覆盖发现规则，未改动产品代码。
+- **未完成（环境限制）**：Windows 群组页的界面点击验收仍无法执行。虚拟机虽已重新登录会话 1，但本会话无法访问其交互桌面：`Environment.UserInteractive=False`、`CopyFromScreen` 报句柄无效、UIA 查询到 0 个元素、新进程的 `MainWindowHandle` 均为 0。需要从虚拟机内部原生驱动，或由用户确认自动登录方案。
+
 ## 2026-10-28 剪贴板图片粘贴
 
 - 聊天输入框现在支持 Ctrl+V（或 Shift+Insert）直接粘贴剪贴板中的截图：剪贴板含文件时仍按文件发送（资源管理器复制图片文件常同时携带两者，文件名更重要）；否则若含位图，则经 `BitmapDecoder` + `BitmapEncoder` 转为 PNG，保存到 `<AppData>\PastedImages\` 后按图片发送。

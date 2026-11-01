@@ -29,6 +29,96 @@ public struct FileMetadata: Codable, Equatable, Sendable {
     }
 }
 
+public struct GroupFileManifestWire: Codable, Equatable, Sendable {
+    public let groupID: UUID
+    public let messageID: UUID
+    public let senderFingerprint: String
+    public let memberRevision: UInt64
+    public let metadata: FileMetadata
+    public let sha256: Data
+
+    public init(groupID: UUID, messageID: UUID, senderFingerprint: String, memberRevision: UInt64,
+                metadata: FileMetadata, sha256: Data) throws {
+        guard !senderFingerprint.isEmpty, senderFingerprint.utf8.count <= 96, sha256.count == 32 else {
+            throw TransferCoordinatorError.invalidManifest
+        }
+        self.groupID = groupID
+        self.messageID = messageID
+        self.senderFingerprint = senderFingerprint
+        self.memberRevision = memberRevision
+        self.metadata = metadata
+        self.sha256 = sha256
+    }
+
+    public static func decodeStrict(_ data: Data) throws -> Self {
+        try validateWireObject(data, allowed: ["groupID", "messageID", "senderFingerprint", "memberRevision", "metadata", "sha256"],
+                               required: ["groupID", "messageID", "senderFingerprint", "memberRevision", "metadata", "sha256"])
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let metadata = root["metadata"] as? [String: Any] else { throw TransferCoordinatorError.invalidManifest }
+        try validateWireObject(metadata, allowed: ["transferID", "fileName", "size", "kind"],
+                               required: ["transferID", "fileName", "size", "kind"])
+        let decoded = try JSONDecoder().decode(Self.self, from: data)
+        return try Self(groupID: decoded.groupID, messageID: decoded.messageID,
+                        senderFingerprint: decoded.senderFingerprint, memberRevision: decoded.memberRevision,
+                        metadata: decoded.metadata, sha256: decoded.sha256)
+    }
+}
+
+public struct GroupFileDecisionWire: Codable, Equatable, Sendable {
+    public let groupID: UUID
+    public let transferID: UUID
+    public let accepted: Bool
+    public let reason: String?
+    public init(groupID: UUID, transferID: UUID, accepted: Bool, reason: String? = nil) {
+        self.groupID = groupID
+        self.transferID = transferID
+        self.accepted = accepted
+        self.reason = reason
+    }
+
+    public static func decodeStrict(_ data: Data) throws -> Self {
+        try validateWireObject(data, allowed: ["groupID", "transferID", "accepted", "reason"],
+                               required: ["groupID", "transferID", "accepted"])
+        let decoded = try JSONDecoder().decode(Self.self, from: data)
+        guard decoded.accepted ? decoded.reason == nil : !(decoded.reason?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+              (decoded.reason?.utf8.count ?? 0) <= 256 else { throw TransferCoordinatorError.invalidManifest }
+        return decoded
+    }
+}
+
+public struct GroupFileReceiptWire: Codable, Equatable, Sendable {
+    public let groupID: UUID
+    public let transferID: UUID
+    public let sha256: Data
+    public init(groupID: UUID, transferID: UUID, sha256: Data) throws {
+        guard sha256.count == 32 else { throw TransferCoordinatorError.checksumMismatch }
+        self.groupID = groupID
+        self.transferID = transferID
+        self.sha256 = sha256
+    }
+
+    public static func decodeStrict(_ data: Data) throws -> Self {
+        try validateWireObject(data, allowed: ["groupID", "transferID", "sha256"],
+                               required: ["groupID", "transferID", "sha256"])
+        let decoded = try JSONDecoder().decode(Self.self, from: data)
+        return try Self(groupID: decoded.groupID, transferID: decoded.transferID, sha256: decoded.sha256)
+    }
+}
+
+private func validateWireObject(_ data: Data, allowed: Set<String>, required: Set<String>) throws {
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw TransferCoordinatorError.invalidManifest
+    }
+    try validateWireObject(object, allowed: allowed, required: required)
+}
+
+private func validateWireObject(_ object: [String: Any], allowed: Set<String>, required: Set<String>) throws {
+    let keys = Set(object.keys)
+    guard keys.isSubset(of: allowed), required.isSubset(of: keys) else {
+        throw TransferCoordinatorError.invalidManifest
+    }
+}
+
 public enum ConnectionError: LocalizedError {
     case rejected, busy, closed
     public var errorDescription: String? {
@@ -49,6 +139,8 @@ private struct FileDigest: Codable { let transferID: UUID; let sha256: Data }
 public final class FileConnection: @unchecked Sendable {
     public let peerName: String
     public let peerFingerprint: String
+    public let protocolVersion: Int
+    public var supportsDurableMembershipCancellation: Bool { protocolVersion >= 5 }
     private static let chunkSize = SecureRecordCipher.maxPlaintextLength - 24
     private let transport: ByteTransport
     private let incoming: AuthenticatedRecordStream
@@ -57,14 +149,19 @@ public final class FileConnection: @unchecked Sendable {
     private var closed = false
     private var running = false
     private var outgoingID: UUID?
+    private var outgoingGroupID: UUID?
     private var decision: ResponseSlot<Bool>?
     private var receipt: ResponseSlot<Data>?
+    private var groupDecision: ResponseSlot<GroupFileDecisionWire>?
+    private var groupReceipt: ResponseSlot<GroupFileReceiptWire>?
     private var textReceipts: [UUID: ResponseSlot<Bool>] = [:]
     private var activeSink: TemporaryFileSink?
     private var pending: [OpenedRecord] = []
 
-    init(session: HandshakeSession, transport: ByteTransport, peerName: String, fingerprint: String) {
+    init(session: HandshakeSession, transport: ByteTransport, peerName: String, fingerprint: String,
+         protocolVersion: Int = 3) {
         self.transport = transport
+        self.protocolVersion = protocolVersion
         self.peerName = peerName
         peerFingerprint = fingerprint
         incoming = AuthenticatedRecordStream(cipher: SecureRecordCipher(session: session, direction: .receive), finishClosesStream: false)
@@ -73,6 +170,14 @@ public final class FileConnection: @unchecked Sendable {
 
     func sendConsent(_ accepted: Bool) async throws {
         try await writer.send(type: .connectionDecision, payload: Data([accepted ? 1 : 0]))
+    }
+
+    public func sendGroupFrame(_ type: TransferMessageType, payload: Data) async throws {
+        guard protocolVersion >= 4,
+              (TransferMessageType.groupControl.rawValue...TransferMessageType.groupFileReceipt.rawValue).contains(type.rawValue) else {
+            throw TransferCoordinatorError.wrongMessage
+        }
+        try await writer.send(type: type, payload: payload)
     }
 
     func receiveConsent() async throws {
@@ -90,10 +195,10 @@ public final class FileConnection: @unchecked Sendable {
     }
 
     public func close() {
-        let state = lock.withLock { () -> (ResponseSlot<Bool>?, ResponseSlot<Data>?, TemporaryFileSink?) in
+        let state = lock.withLock { () -> (ResponseSlot<Bool>?, ResponseSlot<Data>?, ResponseSlot<GroupFileDecisionWire>?, ResponseSlot<GroupFileReceiptWire>?, TemporaryFileSink?) in
             closed = true
-            let values = (decision, receipt, activeSink)
-            decision = nil; receipt = nil; activeSink = nil
+            let values = (decision, receipt, groupDecision, groupReceipt, activeSink)
+            decision = nil; receipt = nil; groupDecision = nil; groupReceipt = nil; activeSink = nil
             return values
         }
         let texts = lock.withLock { let slots = Array(textReceipts.values); textReceipts.removeAll(); return slots }
@@ -101,7 +206,9 @@ public final class FileConnection: @unchecked Sendable {
         for slot in texts { slot.resolve(.failure(ConnectionError.closed)) }
         state.0?.resolve(.failure(ConnectionError.closed))
         state.1?.resolve(.failure(ConnectionError.closed))
-        state.2?.discard()
+        state.2?.resolve(.failure(ConnectionError.closed))
+        state.3?.resolve(.failure(ConnectionError.closed))
+        state.4?.discard()
     }
 
     @discardableResult
@@ -157,7 +264,85 @@ public final class FileConnection: @unchecked Sendable {
         } onCancel: { self.close() }
     }
 
-    /// Text shares the encrypted writer with file chunks, so chat remains available during transfers.
+    @discardableResult
+    public func sendGroupFile(_ fileURL: URL, groupID: UUID, messageID: UUID,
+                              senderFingerprint: String, memberRevision: UInt64,
+                              transferID: UUID = UUID(), kind: FileMetadata.Kind = .file,
+                              progress: @escaping @Sendable (UInt64, UInt64) async -> Void = { _, _ in }) async throws -> GroupFileManifestWire {
+        guard protocolVersion >= 4 else { throw TransferCoordinatorError.wrongMessage }
+        try lock.withLock {
+            guard !closed else { throw ConnectionError.closed }
+            guard outgoingID == nil else { throw ConnectionError.busy }
+            outgoingID = transferID
+            outgoingGroupID = groupID
+        }
+        defer { lock.withLock { outgoingID = nil; outgoingGroupID = nil; groupDecision = nil; groupReceipt = nil } }
+        return try await withTaskCancellationHandler {
+            do {
+                let values = try fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard values.isRegularFile == true, let size = values.fileSize, size >= 0 else {
+                    throw TransferSessionError.ioFailure
+                }
+                let metadata = try FileMetadata(transferID: transferID, fileName: fileURL.lastPathComponent,
+                                                size: UInt64(size), kind: kind)
+                let handle = try FileHandle(forReadingFrom: fileURL)
+                defer { try? handle.close() }
+                var wholeFile = SHA256()
+                while true {
+                    try Task.checkCancellation()
+                    guard let bytes = try handle.read(upToCount: 1_048_576), !bytes.isEmpty else { break }
+                    wholeFile.update(data: bytes)
+                }
+                let digest = Data(wholeFile.finalize())
+                try handle.seek(toOffset: 0)
+                let manifest = try GroupFileManifestWire(groupID: groupID, messageID: messageID,
+                                                         senderFingerprint: senderFingerprint,
+                                                         memberRevision: memberRevision,
+                                                         metadata: metadata, sha256: digest)
+                let decisionSlot = ResponseSlot<GroupFileDecisionWire>()
+                lock.withLock { groupDecision = decisionSlot }
+                try await writer.send(type: .groupManifest, payload: JSONEncoder().encode(manifest))
+                let decision = try await decisionSlot.wait(timeout: 130)
+                guard decision.groupID == groupID, decision.transferID == transferID else {
+                    throw TransferCoordinatorError.invalidDecision
+                }
+                guard decision.accepted else { throw TransferSessionError.peerRejected }
+
+                var offset: UInt64 = 0
+                var chunkHasher = SHA256()
+                while offset < metadata.size {
+                    try Task.checkCancellation()
+                    let count = Int(min(UInt64(Self.chunkSize), metadata.size - offset))
+                    guard let bytes = try handle.read(upToCount: count), !bytes.isEmpty else {
+                        throw TransferSessionError.ioFailure
+                    }
+                    var payload = Self.idBytes(transferID)
+                    var position = offset.bigEndian
+                    withUnsafeBytes(of: &position) { payload.append(contentsOf: $0) }
+                    payload.append(bytes)
+                    try await writer.send(type: .chunk, payload: payload)
+                    chunkHasher.update(data: bytes)
+                    offset += UInt64(bytes.count)
+                    await progress(offset, metadata.size)
+                }
+                guard Data(chunkHasher.finalize()) == digest else { throw TransferCoordinatorError.checksumMismatch }
+                let receiptSlot = ResponseSlot<GroupFileReceiptWire>()
+                lock.withLock { groupReceipt = receiptSlot }
+                try await writer.send(type: .finish, payload: JSONEncoder().encode(FileDigest(transferID: transferID, sha256: digest)))
+                let receipt = try await receiptSlot.wait(timeout: 5 * 60)
+                guard receipt.groupID == groupID, receipt.transferID == transferID,
+                      receipt.sha256 == digest else { throw TransferCoordinatorError.checksumMismatch }
+                return manifest
+            } catch {
+                if let transferError = error as? TransferSessionError, case .peerRejected = transferError {
+                    throw error
+                }
+                close()
+                throw error
+            }
+        } onCancel: { self.close() }
+    }
+
     @discardableResult
     public func sendText(_ text: String, id: UUID = UUID()) async throws -> ChatText {
         let message = try ChatText(id: id, text: text)
@@ -188,7 +373,12 @@ public final class FileConnection: @unchecked Sendable {
                     fileApproval: (@Sendable (FileMetadata) async throws -> Bool)? = nil,
                     didReceive: @escaping @Sendable (FileMetadata, URL) async -> Void,
                     progress: @escaping @Sendable (FileMetadata, UInt64) async -> Void = { _, _ in },
-                    didReceiveText: @escaping @Sendable (ChatText) async throws -> Void = { _ in }) async throws {
+                    didReceiveText: @escaping @Sendable (ChatText) async throws -> Void = { _ in },
+                                          groupFileApproval: @escaping @Sendable (GroupFileManifestWire) async throws -> Bool = { _ in false },
+                     groupFileDidReceive: @escaping @Sendable (GroupFileManifestWire, URL) async throws -> Void = { _, _ in },
+                     didReceiveGroupFrame: @escaping @Sendable (TransferMessageType, Data) async throws -> Void = { _, _ in
+                         throw TransferCoordinatorError.wrongMessage
+                     }) async throws {
         try lock.withLock {
             guard !closed else { throw ConnectionError.closed }
             guard !running else { throw ConnectionError.busy }
@@ -262,19 +452,29 @@ public final class FileConnection: @unchecked Sendable {
                         try file.sink.write(bytes)
                         file.hasher.update(data: bytes)
                         file.received += UInt64(bytes.count)
-                        await progress(file.metadata, file.received)
+                        if file.groupManifest == nil { await progress(file.metadata, file.received) }
 
                     case TransferMessageType.finish.rawValue:
                         let value = try JSONDecoder().decode(FileDigest.self, from: record.plaintext)
                         guard let complete = file, value.transferID == complete.metadata.transferID,
                               complete.received == complete.metadata.size, value.sha256.count == 32 else { throw TransferCoordinatorError.interrupted }
-                        guard Data(complete.hasher.finalize()) == value.sha256 else { throw TransferCoordinatorError.checksumMismatch }
+                        guard Data(complete.hasher.finalize()) == value.sha256,
+                              complete.groupManifest.map({ $0.sha256 == value.sha256 }) ?? true else {
+                            throw TransferCoordinatorError.checksumMismatch
+                        }
                         try complete.sink.commit()
                         guard let url = complete.sink.savedURL else { throw TransferSessionError.ioFailure }
                         file = nil
                         lock.withLock { activeSink = nil }
-                        try await writer.send(type: .receipt, payload: JSONEncoder().encode(value))
-                        await didReceive(complete.metadata, url)
+                        if let groupManifest = complete.groupManifest {
+                            try await groupFileDidReceive(groupManifest, url)
+                            let receipt = try GroupFileReceiptWire(groupID: groupManifest.groupID,
+                                transferID: groupManifest.metadata.transferID, sha256: value.sha256)
+                            try await writer.send(type: .groupFileReceipt, payload: JSONEncoder().encode(receipt))
+                        } else {
+                            try await writer.send(type: .receipt, payload: JSONEncoder().encode(value))
+                            await didReceive(complete.metadata, url)
+                        }
 
                     case TransferMessageType.receipt.rawValue:
                         let value = try JSONDecoder().decode(FileDigest.self, from: record.plaintext)
@@ -299,6 +499,63 @@ public final class FileConnection: @unchecked Sendable {
                         }
                         slot.resolve(.success(true))
 
+                    case TransferMessageType.groupManifest.rawValue:
+                        guard protocolVersion >= 4, file == nil else { throw TransferCoordinatorError.wrongMessage }
+                        let raw = try GroupFileManifestWire.decodeStrict(record.plaintext)
+                        let manifest = try GroupFileManifestWire(groupID: raw.groupID, messageID: raw.messageID,
+                            senderFingerprint: raw.senderFingerprint, memberRevision: raw.memberRevision,
+                            metadata: raw.metadata, sha256: raw.sha256)
+                        let approved: Bool
+                        do { approved = try await groupFileApproval(manifest) }
+                        catch { approved = false }
+                        let response = GroupFileDecisionWire(groupID: manifest.groupID,
+                            transferID: manifest.metadata.transferID, accepted: approved,
+                            reason: approved ? nil : "接收方拒绝或无法处理该群文件。")
+                        if !approved {
+                            try await writer.send(type: .groupFileDecision, payload: JSONEncoder().encode(response))
+                            continue
+                        }
+                        let directory = await directoryProvider?() ?? receiveDirectory
+                        let sink = try lock.withLock {
+                            guard !closed else { throw ConnectionError.closed }
+                            let sink = try TemporaryFileSink(directoryURL: directory, metadata: manifest.metadata)
+                            activeSink = sink
+                            return sink
+                        }
+                        file = IncomingFile(metadata: manifest.metadata, sink: sink, groupManifest: manifest)
+                        try await writer.send(type: .groupFileDecision, payload: JSONEncoder().encode(response))
+
+                    case TransferMessageType.groupFileDecision.rawValue:
+                        let value = try GroupFileDecisionWire.decodeStrict(record.plaintext)
+                        let slot: ResponseSlot<GroupFileDecisionWire> = try lock.withLock {
+                            guard value.transferID == outgoingID, value.groupID == outgoingGroupID,
+                                  let slot = groupDecision else { throw TransferCoordinatorError.invalidDecision }
+                            groupDecision = nil
+                            return slot
+                        }
+                        slot.resolve(.success(value))
+
+                    case TransferMessageType.groupFileReceipt.rawValue:
+                        let value = try GroupFileReceiptWire.decodeStrict(record.plaintext)
+                        let slot: ResponseSlot<GroupFileReceiptWire> = try lock.withLock {
+                            guard value.transferID == outgoingID, value.groupID == outgoingGroupID,
+                                  value.sha256.count == 32, let slot = groupReceipt else {
+                                throw TransferCoordinatorError.checksumMismatch
+                            }
+                            groupReceipt = nil
+                            return slot
+                        }
+                        slot.resolve(.success(value))
+
+                    case TransferMessageType.groupControl.rawValue,
+                         TransferMessageType.groupText.rawValue,
+                         TransferMessageType.groupTextAck.rawValue:
+                        guard protocolVersion >= 4,
+                              let type = TransferMessageType(rawValue: record.type) else {
+                            throw TransferSessionError.unexpectedRecord(record.type)
+                        }
+                        try await didReceiveGroupFrame(type, record.plaintext)
+
                     default: throw TransferSessionError.unexpectedRecord(record.type)
                     }
                 }
@@ -321,9 +578,14 @@ public final class FileConnection: @unchecked Sendable {
 private final class IncomingFile {
     let metadata: FileMetadata
     let sink: TemporaryFileSink
+    let groupManifest: GroupFileManifestWire?
     var received: UInt64 = 0
     var hasher = SHA256()
-    init(metadata: FileMetadata, sink: TemporaryFileSink) { self.metadata = metadata; self.sink = sink }
+    init(metadata: FileMetadata, sink: TemporaryFileSink, groupManifest: GroupFileManifestWire? = nil) {
+        self.metadata = metadata
+        self.sink = sink
+        self.groupManifest = groupManifest
+    }
 }
 
 /// Serialize encoding AND actual writes across simultaneous sends and receive receipts.

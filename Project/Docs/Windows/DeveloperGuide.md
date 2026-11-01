@@ -1,8 +1,8 @@
 # 飞鸽快传 Windows 原生开发手册
 
-## 当前状态（2026-10-26）
+## 当前状态（2026-11-01）
 
-当前源码最新 Core 回归 **449/449** 通过，包含 1.2.0 交付后的接收确认、名称同步、刷新反馈和更新源改造。本轮 Mac 测试机仅安装 .NET 11 RC，采用 `DOTNET_ROLL_FORWARD=Major` 执行 net10 测试，并非 Windows .NET 10 验收；WinUI 双架构构建与真实双机测试也尚未重跑。1.2.0 安装包未替换，仍对应 392 项交付基线。更新服务已配置 Mac mini LAN 端点但尚无清单/包发布，详见[更新接入文档](UpdateService.md)。
+Windows 11 ARM64 / .NET 10.0.402 来宾机上，当前源码 `Feige.Core.Tests` **578/578**、`Feige.App.Tests` **8/8** 通过，测试均在隔离临时副本和现有 ARM64 .NET host 上运行。当前源码 Windows App 的 x64 Release **非打包编译**已通过，**0 警告、0 错误**；来宾机没有 x64 .NET test host，因此没有完成 x64 运行时测试。Core 测试编译另有一条既存 nullable 警告（`UpdateMultiSourceTests.cs:81`），不影响 578 项测试通过。`449/449` 是此前 macOS .NET 11 RC roll-forward 的历史结果。Parallels 实际 UI/LAN 已覆盖 Mac 群主邀请 Windows、Windows 群主建群及成员增删，以及 1 个 Windows owner + 同一 Mac 宿主 19 个隔离 `TransferModel` runtime 的 20 人群组广播；不代表 20 台实体设备，也不替代完整跨平台矩阵。正式签名发行包安装/升级/卸载和完整网络边界验收仍待完成。GitHub `v1.2.1` Release 有安装包及校验文件，但缺少签名更新清单；Windows 更新端到端安装尚未验收，详见[更新接入文档](UpdateService.md)。
 
 本手册按时间倒序保留实现记录，下面各节的“未打包 / 测试数 / 构建结果”均指条目发生时，不代表当前状态。
 

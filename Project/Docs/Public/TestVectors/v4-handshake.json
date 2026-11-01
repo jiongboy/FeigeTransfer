@@ -1,0 +1,32 @@
+{
+  "format": "feige-v4-handshake-primitives",
+  "version": 4,
+  "description": "Fixed transcript and HKDF interoperability vector. Identity key bytes are opaque fixed transcript inputs; signatures and private keys are intentionally absent. The X25519 shared secret is RFC 7748 section 6.1 test data.",
+  "initiatorOffer": {
+    "version": 4,
+    "role": 1,
+    "deviceName": "Mac-A",
+    "identityPublicKeyDERHex": "3006020101020101",
+    "ephemeralPublicKeyHex": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+    "nonceHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "sessionCode": ""
+  },
+  "responderOffer": {
+    "version": 4,
+    "role": 2,
+    "deviceName": "Win-B",
+    "identityPublicKeyDERHex": "3006020102020102",
+    "ephemeralPublicKeyHex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+    "nonceHex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "sessionCode": ""
+  },
+  "transcriptHex": "46454947452d48414e445348414b452d563400000401000000054d61632d41000000083006020101020101000000208520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a00000020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000000004020000000557696e2d4200000008300602010202010200000020de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f00000020202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f00000000",
+  "transcriptSha256Hex": "4028226669377ac6b541c949a8c15bb081e7ada2b72f8c5fe98480fc63570b01",
+  "sharedSecretHex": "\u0034a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+  "initiatorToResponderKeyHex": "bd0dbcb86ce8af12465ccdad774c8a8f33967b5257ce32c12adee2b343fda13c",
+  "responderToInitiatorKeyHex": "1bee5d7ba763eb9e8c7c7a14d90607543b50d74fc15d3f9449f86c2d85b39257",
+  "hkdfSalt": "transcriptSha256",
+  "hkdfInfoInitiatorToResponder": "feige-v4 initiator-to-responder",
+  "hkdfInfoResponderToInitiator": "feige-v4 responder-to-initiator",
+  "hkdfOutputBytes": 32
+}

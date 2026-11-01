@@ -109,7 +109,9 @@ public final class SecureRecordCipher: @unchecked Sendable {
         return try AES.GCM.Nonce(data: nonceData)
     }
 
-    private static func isKnownType(_ type: UInt8) -> Bool { (TransferMessageType.manifest.rawValue...TransferMessageType.textReceipt.rawValue).contains(type) }
+    private static func isKnownType(_ type: UInt8) -> Bool {
+        (TransferMessageType.manifest.rawValue...TransferMessageType.groupFileReceipt.rawValue).contains(type)
+    }
 }
 
 public enum HandshakeDirection { case send, receive }

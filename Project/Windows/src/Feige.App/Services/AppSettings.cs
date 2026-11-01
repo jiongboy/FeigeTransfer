@@ -102,7 +102,20 @@ public sealed class AppSettings
     [DllImport("shell32.dll", ExactSpelling = true)]
     private static extern int SHGetKnownFolderPath(in Guid folderId, uint flags, nint token, out nint path);
 
-    public static string AppDataFolder => AppEnvironment.IsPackaged
-        ? ApplicationData.Current.LocalFolder.Path
-        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Songli", "FeigeTransfer");
+    public static string AppDataFolder
+    {
+        get
+        {
+#if FEIGE_TEST_ISOLATION
+            string? testDataDirectory = Environment.GetEnvironmentVariable("FEIGE_TEST_DATA_DIRECTORY");
+            if (string.IsNullOrWhiteSpace(testDataDirectory))
+                throw new InvalidOperationException("FEIGE_TEST_DATA_DIRECTORY is required for an isolated test build.");
+            return Path.GetFullPath(testDataDirectory);
+#else
+            return AppEnvironment.IsPackaged
+                ? ApplicationData.Current.LocalFolder.Path
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Songli", "FeigeTransfer");
+#endif
+        }
+    }
 }

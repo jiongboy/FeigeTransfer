@@ -8,10 +8,11 @@ public enum ConnectionService {
                                  approvalTimeout: TimeInterval = 5 * 60,
                                  handshakeTimeout: TimeInterval = 15,
                                  identityAuthorizationTimeout: TimeInterval = 5 * 60,
+                                  protocolVersion: UInt16 = 3,
                                  requestApproval: @escaping @Sendable (PendingPeerApproval) async throws -> Bool = { _ in false }) async throws -> FileConnection {
         try await establish(transport: transport, identity: identity, role: role, deviceName: deviceName,
                             approvalTimeout: approvalTimeout, handshakeTimeout: handshakeTimeout,
-                            identityAuthorizationTimeout: identityAuthorizationTimeout,
+                            identityAuthorizationTimeout: identityAuthorizationTimeout, protocolVersion: protocolVersion,
                             onStage: { _ in }, requestApproval: requestApproval)
     }
 
@@ -20,6 +21,7 @@ public enum ConnectionService {
                                  approvalTimeout: TimeInterval = 5 * 60,
                                  handshakeTimeout: TimeInterval = 15,
                                  identityAuthorizationTimeout: TimeInterval = 5 * 60,
+                                  protocolVersion: UInt16 = 3,
                                  onStage: @escaping @Sendable (HandshakeStage) async -> Void,
                                  requestApproval: @escaping @Sendable (PendingPeerApproval) async throws -> Bool = { _ in false }) async throws -> FileConnection {
         do {
@@ -27,18 +29,29 @@ public enum ConnectionService {
                   identityAuthorizationTimeout.isFinite, identityAuthorizationTimeout > 0 else {
                 throw AuthenticatedStreamError.timeout
             }
-            let handshake = try FeigeHandshake(identity: identity, role: role, deviceName: deviceName, sessionCode: "", version: 3)
-            // The initial network exchange still has a short timeout. Proofs may
-            // require a password on either Mac, independently of connection consent.
-            let pending = try await deadline(identityAuthorizationTimeout + 2 * handshakeTimeout, transport: transport) {
-                try await AuthenticatedHandshakeExchange.perform(local: handshake, transport: transport,
-                                                                 timeout: handshakeTimeout,
-                                                                 proofTimeout: identityAuthorizationTimeout,
-                                                                 onStage: onStage)
+            guard protocolVersion == 3 || protocolVersion == 4 || protocolVersion == 5 else { throw HandshakeError.invalidOffer }
+            // The responder selects exactly the initiator's supported version. The initiator uses
+            // the explicitly selected version; neither path retries with another version.
+            let (handshake, pending) = try await deadline(identityAuthorizationTimeout + 2 * handshakeTimeout,
+                                                            transport: transport) {
+                if role == .responder {
+                    let result = try await AuthenticatedHandshakeExchange.performResponder(
+                        identity: identity, deviceName: deviceName, transport: transport,
+                        timeout: handshakeTimeout, proofTimeout: identityAuthorizationTimeout,
+                        onStage: onStage)
+                    return (result.handshake, result.approval)
+                }
+                let local = try FeigeHandshake(identity: identity, role: role, deviceName: deviceName,
+                                               sessionCode: "", version: protocolVersion)
+                let approval = try await AuthenticatedHandshakeExchange.perform(
+                    local: local, transport: transport, timeout: handshakeTimeout,
+                    proofTimeout: identityAuthorizationTimeout, onStage: onStage)
+                return (local, approval)
             }
             let session = try handshake.deriveConnectionKeys(pending)
             let channel = FileConnection(session: session, transport: transport,
-                                         peerName: pending.peer.deviceName, fingerprint: pending.peerFingerprint)
+                                         peerName: pending.peer.deviceName, fingerprint: pending.peerFingerprint,
+                                         protocolVersion: Int(handshake.offer.version))
             if role == .responder {
                 let accepted = try await deadline(approvalTimeout, transport: transport) { try await requestApproval(pending) }
                 try await channel.sendConsent(accepted)

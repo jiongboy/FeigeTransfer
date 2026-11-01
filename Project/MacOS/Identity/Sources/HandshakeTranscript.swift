@@ -41,7 +41,7 @@ public struct HandshakeOffer: Codable, Equatable, Sendable {
 
     public init(version: UInt16 = 1, role: HandshakeRole, deviceName: String,
                 identityPublicKeyDER: Data, ephemeralPublicKey: Data, nonce: Data, sessionCode: String) throws {
-        guard (1...3).contains(version), !deviceName.isEmpty, deviceName.utf8.count <= 128,
+        guard (1...5).contains(version), !deviceName.isEmpty, deviceName.utf8.count <= 128,
               !identityPublicKeyDER.isEmpty, identityPublicKeyDER.count <= 1024, ephemeralPublicKey.count == 32,
               nonce.count == 32,
               version >= 2 ? sessionCode.isEmpty : Self.isValidCode(sessionCode) else { throw HandshakeError.invalidOffer }

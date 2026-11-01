@@ -1,6 +1,6 @@
 # 飞鸽快传 Mac 原生项目
 
-macOS 13+，SwiftUI / Network.framework / CryptoKit / Keychain / UserNotifications。当前版本 0.4.0（构建 7），功能已按 Windows 1.2.x 对齐。
+macOS 13+，SwiftUI / Network.framework / CryptoKit / Keychain / UserNotifications。当前已发布版本为 0.4.0（构建 11）；正式候选 0.4.1（构建 12）面向 Apple Silicon arm64，已完成 Developer ID 签名、公证和 Gatekeeper 验证，尚未发布到更新源。
 
 ## 当前操作流程
 
@@ -43,6 +43,6 @@ v1 的 `TransferService` / `TransferSession` / SAS 原语留作回归参考，�
 
 已验证本机真实 TCP 上的一次同意、多文件与反向发送；已验证超过旧 100 MiB 阈值的 128 MiB+17 字节文件，源和目标摘要一致。v2 同一连接双向同时传输、空文件、同名保护及异常清理有针对性测试。
 
-当前实现按[Public protocol v3](../Public/ProtocolV3.md)执行，与旧版 v1/v2 不互通；Windows v3 实现和基本互通已有用户反馈，完整双机矩阵仍待验收。实现细节见[开发手册](DeveloperGuide.md)。macOS 0.4.0 build 11 已发布到 Mac mini 局域网更新源；build 9 → 10 升级链路及 build 10 → 11 更新成功提示关闭均已实测。文字/图片/文件并发、文字去重、记录恢复、草稿、设置兼容、更新清单验签与下载校验已有测试。
+当前实现按[Public protocol v3](../Public/ProtocolV3.md)执行，与旧版 v1/v2 不互通；Windows v3 实现和基本互通已有用户反馈，完整双机矩阵仍待验收。实现细节见[开发手册](DeveloperGuide.md)。macOS 0.4.0 build 11 已发布到 Mac mini 局域网更新源；build 9 → 10 升级链路及 build 10 → 11 更新成功提示关闭均已实测。文字/图片/文件并发、文字去重、记录恢复、草稿、设置兼容、更新清单验签与下载校验已有测试。截至 2026-11-01，本机 macOS 27 ARM64 / Swift 6.4.2 / Xcode 27.2 的 Release 源码构建和 `swift test` 回归通过；本轮未生成 app bundle、签名或公证产物。
 
 尚未完成完整实体双机、Windows 互通矩阵、更新边界场景（跳过、间隔、收发中等待、失败拒绝）、DOCX 复杂样式/分页预览、特殊网络/磁盘场景、Developer ID 公证与通用架构验收。Mac mini 当前为 macOS 12.7.6 Intel，不能运行最低要求为 macOS 13.0 的客户端；真实升级在本机 arm64 Mac 验收。目录传输、断点续传仍未实现；孤立暂存文件扫描清理已实现，但只在用户保存接收目录时触发。详见[验收清单](AcceptanceChecklist.md)。

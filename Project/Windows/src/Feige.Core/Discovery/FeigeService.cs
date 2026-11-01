@@ -23,11 +23,26 @@ public sealed record DiscoveredPeer(DnsName Instance, string DeviceName, string?
     /// <summary>All live LAN candidates for this instance; only one will reach the handshake.</summary>
     public IReadOnlyList<IPEndPoint> EndPoints { get; init; } = [EndPoint];
 
+    /// <summary>Protocol version selected from untrusted discovery metadata; authenticated by the handshake before use.</summary>
+    public int ProtocolVersion { get; init; }
+
+    /// <summary>Versions advertised by the peer; used only to choose a handshake attempt.</summary>
+    public IReadOnlySet<int> SupportedVersions { get; init; } = new HashSet<int>();
+
     /// <summary>First few fingerprint groups, for a subtitle; the full value belongs in the confirmation dialog.</summary>
     public string ShortFingerprint
         => string.IsNullOrEmpty(Fingerprint)
             ? "指纹待握手确认"
             : Fingerprint.Length <= 23 ? Fingerprint : Fingerprint[..23] + "…";
+
+    /// <summary>
+    /// One-line description for list rows and screen readers. Without it each list item exposes the
+    /// record's generated <c>ToString()</c> (instance name and the whole end-point array), which is unreadable.
+    /// </summary>
+    public string AccessibleName => $"{DisplayName}，{EndpointText}，{ShortFingerprint}";
+
+    /// <summary>Keeps assistive technology reading the same concise text as the visible row.</summary>
+    public override string ToString() => AccessibleName;
 }
 
 /// <summary>
@@ -55,8 +70,11 @@ public static class FeigeService
     /// <summary>Domain label.</summary>
     public const string DomainLabel = "local";
 
-    /// <summary>Protocol version advertised in TXT; must match <c>HandshakeOffer.CurrentVersion</c>.</summary>
+    /// <summary>Protocol version advertised in TXT; must match the selected handshake version.</summary>
     public const int ProtocolVersion = 1;
+
+    /// <summary>Current group-capable protocol version.</summary>
+    public const int V4ProtocolVersion = 4;
 
     /// <summary>TXT key for the protocol version.</summary>
     public const string TxtVersion = "v";
@@ -75,14 +93,14 @@ public static class FeigeService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceName);
 
-        if (version is not (1 or 3)) throw new ArgumentOutOfRangeException(nameof(version));
+        if (version is not (1 or 3 or 4)) throw new ArgumentOutOfRangeException(nameof(version));
         string label;
-        if (version == 3)
+        if (version is 3 or 4)
         {
             string compact = fingerprint?.Replace(" ", string.Empty).ToUpperInvariant() ?? string.Empty;
             if (compact.Length != 64 || !compact.All(char.IsAsciiHexDigit))
-                throw new ArgumentException("V3 discovery requires a full SHA-256 fingerprint.", nameof(fingerprint));
-            label = "Feige-" + compact[..20];
+                throw new ArgumentException("V3/V4 discovery requires a full SHA-256 fingerprint.", nameof(fingerprint));
+            label = version == 3 ? "Feige-" + compact[..20] : "Feige4-" + compact[..20];
         }
         else label = TruncateUtf8(deviceName.Trim(), 63);
         return Type.WithPrefix(label);
@@ -93,9 +111,19 @@ public static class FeigeService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceName);
         ArgumentNullException.ThrowIfNull(fingerprint);
-        if (version is not (1 or 3)) throw new ArgumentOutOfRangeException(nameof(version));
+        if (version is not (1 or 3 or 4)) throw new ArgumentOutOfRangeException(nameof(version));
 
         if (version == 3) return ["version=3", $"name={deviceName.Trim()}"];
+        if (version == 4)
+        {
+            return
+            [
+                $"{TxtVersion}={V4ProtocolVersion}",
+                $"{TxtName}={deviceName.Trim()}",
+                $"{TxtFingerprint}={fingerprint.Replace(" ", string.Empty, StringComparison.Ordinal)}",
+                "caps=3,4,5",
+            ];
+        }
         return
         [
             $"{TxtVersion}={ProtocolVersion}",
@@ -126,7 +154,8 @@ public static class FeigeService
             {
                 name = value;
             }
-            else if (string.Equals(key, TxtFingerprint, StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(key, TxtFingerprint, StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(key, "fingerprint", StringComparison.OrdinalIgnoreCase))
             {
                 fingerprint = value;
             }
@@ -140,6 +169,47 @@ public static class FeigeService
         // better message than "device silently disappeared".
         _ = version;
         return (string.IsNullOrEmpty(name) ? string.Empty : name, string.IsNullOrEmpty(fingerprint) ? null : fingerprint);
+    }
+
+    /// <summary>Reads the advertised protocol version from either legacy or current TXT key names.</summary>
+    public static int ParseProtocolVersion(IEnumerable<string> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        int version = 0;
+        foreach (string entry in entries)
+        {
+            int separator = entry.IndexOf('=');
+            if (separator <= 0) continue;
+            string key = entry[..separator];
+            if ((string.Equals(key, TxtVersion, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(key, "version", StringComparison.OrdinalIgnoreCase)) &&
+                int.TryParse(entry[(separator + 1)..], out int parsed))
+            {
+                version = parsed;
+            }
+        }
+        return version;
+    }
+
+    /// <summary>Returns protocol versions supported by an advertisement and its optional capability list.</summary>
+    public static IReadOnlySet<int> ParseSupportedVersions(IEnumerable<string> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        string[] values = entries.ToArray();
+        var versions = new HashSet<int>();
+        int advertised = ParseProtocolVersion(values);
+        if (advertised > 0) versions.Add(advertised);
+        foreach (string entry in values)
+        {
+            int separator = entry.IndexOf('=');
+            if (separator <= 0) continue;
+            string key = entry[..separator];
+            if (!string.Equals(key, "caps", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(key, "capabilities", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (string part in entry[(separator + 1)..].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                if (int.TryParse(part, out int version) && version > 0) versions.Add(version);
+        }
+        return versions;
     }
 
     /// <summary>

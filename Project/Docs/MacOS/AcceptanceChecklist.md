@@ -1,6 +1,6 @@
 # Mac 验收清单
 
-2026-10-29，当前 macOS 版本为 0.4.0 build 11，使用 v3 协议；更新清单与包已发布到 Mac mini LAN。已完成 build 9 → 10 升级链路验收，并完成 build 10 → 11 更新及“更新完成”提示条关闭验证。包使用 Apple Distribution 签名，尚未公证。
+截至 2026-11-01，已发布 macOS 版本为 0.4.0 build 11，使用 v3 协议；更新清单与包已发布到 Mac mini LAN。已完成 build 9 → 10 升级链路验收，并完成 build 10 → 11 更新及“更新完成”提示条关闭验证。已发布包使用 Apple Distribution 签名，尚未公证。当前正式候选版本为 0.4.1 build 12（Apple Silicon arm64）；正式包已用 Developer ID Application: Song Li (9C8Y647J2R) 签名并获 Apple 公证 Accepted。`codesign --verify --deep --strict`、`xcrun stapler validate` 和 `spctl --assess --type execute --verbose=4` 均通过，zip 完整性检查通过。包位于 `Release/MacOS/0.4.1/`，尚未发布到更新源；Intel/x86_64 不包含在本候选中。另已完成 Parallels Windows 11 ARM64 的选定群组 UI/LAN 验收：Mac 群主邀请 Windows、Windows 群主建群及成员增删，以及 1 个 Windows owner + 同一 Mac 宿主 19 个隔离 macOS runtime 的 20 人群组广播；这是混合 runtime 容量验证，不是 20 台实体设备，20 台实体设备不作为发布门槛。两台 Mac 与 Windows↔Windows 实体组合仍按首发支持范围验收。
 
 ## 自动化验证
 
@@ -47,7 +47,7 @@
 ## 两台实体 Mac
 
 - [ ] 启动时钥匙串签名授权；选择“始终允许”后反复连接；取消授权可重试；一端授权较慢不再触发 15 秒超时。
-- [ ] 两端安装 0.3.3 预览包；首次局域网授权允许/拒绝后均有明确状态。
+- [ ] 在两台受支持的 macOS 13+ 设备上安装同一候选版（版本号与架构在执行记录中登记）；首次局域网授权允许/拒绝后均显示明确状态。
 - [ ] 打开应用后互相发现；只询问接收方是否同意，发起方无需额外确认。
 - [ ] 使用发现和手动 IP/端口连接，同意后直接双向传输，无配对码、短码或逐文件确认。
 - [ ] 拒绝连接、取消、断网、错误 ID/偏移/摘要均不产生伪成功。

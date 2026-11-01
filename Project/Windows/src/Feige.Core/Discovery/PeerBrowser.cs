@@ -53,6 +53,9 @@ public sealed class PeerBrowser : IAsyncDisposable
     /// <summary>Instance label of this device, so it never lists itself.</summary>
     public string? LocalInstanceLabel { get; set; }
 
+    /// <summary>Instance labels published locally, so none of this process's advertisements become peers.</summary>
+    public IReadOnlyCollection<string> LocalInstanceLabels { get; init; } = Array.Empty<string>();
+
     /// <summary>Snapshot of the currently reachable peers.</summary>
     public IReadOnlyList<DiscoveredPeer> Peers
     {
@@ -266,7 +269,14 @@ public sealed class PeerBrowser : IAsyncDisposable
 
         Entry entry = GetOrCreate(txt.Name, DateTimeOffset.UtcNow);
         (string name, string? fingerprint) = FeigeService.ParseTxt(txt.Entries);
-        entry.VersionMatches = RequiredVersion is null || txt.Ttl != 0 && txt.Entries.Contains($"version={RequiredVersion}");
+        IReadOnlySet<int> supportedVersions = FeigeService.ParseSupportedVersions(txt.Entries);
+        int advertisedVersion = FeigeService.ParseProtocolVersion(txt.Entries);
+        entry.SupportedVersions = supportedVersions;
+        entry.ProtocolVersion = RequiredVersion is int required && supportedVersions.Contains(required)
+            ? required == 4 && supportedVersions.Contains(5) ? 5 : required
+            : supportedVersions.Contains(5) ? 5 : supportedVersions.Contains(4) ? 4 : advertisedVersion;
+        entry.VersionMatches = RequiredVersion is null || txt.Ttl != 0 &&
+            (supportedVersions.Contains(RequiredVersion.Value) || RequiredVersion.Value == 4 && supportedVersions.Contains(5));
         if (!entry.VersionMatches && entry.Reported is { } reported)
         {
             _peers.Remove(reported);
@@ -321,10 +331,17 @@ public sealed class PeerBrowser : IAsyncDisposable
                 continue;
             }
             var targets = addresses.Select(address => new IPEndPoint(address, entry.Port.Value)).ToArray();
-            var peer = new DiscoveredPeer(entry.Instance, entry.DeviceName, entry.Fingerprint, targets[0]) { EndPoints = targets };
+            var peer = new DiscoveredPeer(entry.Instance, entry.DeviceName, entry.Fingerprint, targets[0])
+            {
+                EndPoints = targets,
+                ProtocolVersion = entry.ProtocolVersion,
+                SupportedVersions = new HashSet<int>(entry.SupportedVersions),
+            };
             if (entry.Reported is { } previous)
             {
-                if (previous.DeviceName == peer.DeviceName && previous.Fingerprint == peer.Fingerprint && previous.EndPoints.SequenceEqual(targets)) continue;
+                if (previous.DeviceName == peer.DeviceName && previous.Fingerprint == peer.Fingerprint &&
+                    previous.ProtocolVersion == peer.ProtocolVersion && previous.SupportedVersions.SetEquals(peer.SupportedVersions) &&
+                    previous.EndPoints.SequenceEqual(targets)) continue;
                 _peers.Remove(previous);
             }
             entry.Reported = peer; _peers.Add(peer); found.Add(peer);
@@ -376,8 +393,8 @@ public sealed class PeerBrowser : IAsyncDisposable
     }
 
     private bool IsSelf(DnsName instance)
-        => LocalInstanceLabel is not null
-            && string.Equals(instance.FirstLabel, LocalInstanceLabel, StringComparison.OrdinalIgnoreCase);
+        => string.Equals(instance.FirstLabel, LocalInstanceLabel, StringComparison.OrdinalIgnoreCase) ||
+           LocalInstanceLabels.Contains(instance.FirstLabel, StringComparer.OrdinalIgnoreCase);
 
     private async Task SendQueryAsync(MdnsMessage query)
     {
@@ -425,6 +442,9 @@ public sealed class PeerBrowser : IAsyncDisposable
 
     private sealed class Entry(DnsName instance, DateTimeOffset now)
     {
+        public int ProtocolVersion { get; set; }
+        public IReadOnlySet<int> SupportedVersions { get; set; } = new HashSet<int>();
+
         public bool VersionMatches { get; set; }
 
         public DnsName Instance { get; } = instance;

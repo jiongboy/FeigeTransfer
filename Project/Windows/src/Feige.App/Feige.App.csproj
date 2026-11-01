@@ -28,6 +28,10 @@
     <Content Include="Updates\VerifyPinnedAuthenticode.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <PropertyGroup Condition="'$(FeigeTestIsolation)' == 'true'">
+    <DefineConstants>$(DefineConstants);FEIGE_TEST_ISOLATION</DefineConstants>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(FeigeInstallerBuild)' == 'true'">
     <WindowsPackageType>None</WindowsPackageType>
     <EnableMsixTooling>false</EnableMsixTooling>

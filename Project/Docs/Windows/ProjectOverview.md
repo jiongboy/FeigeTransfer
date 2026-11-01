@@ -18,15 +18,15 @@ Windows 工程位于 `Project/Windows/`，入口见 [Windows README](../../Windo
 
 macOS 0.3.3 与当前 Windows 源码均使用 v3，旧 Windows v1 安装包不兼容。WinUI 已接入 v3 会话服务、一次同意、按指纹归组的设备历史、文字/附件时间线、图片缩略图、草稿、重试与消息存储。1.2.0 交付基线的 392 项核心测试曾在 macOS ARM64 和 Windows ARM64 的 .NET 10 上通过，WinUI ARM64、x64 构建通过（0 警告、0 错误）；这是历史交付验证，不代表当前新目录已在 Windows .NET 10 环境复验。
 
-用户已反馈 Windows↔Mac 基本互通。1.2.0 汇总三栏界面、附件预览、会话管理、两页引导与网络韧性优化，Windows 11 ARM64 的原生窗口专项检查见开发日志。x64 / ARM64 自包含 EXE 交付与验证范围见 [1.2.0 交付说明](ReleaseNotes-1.2.0.md)。完整双机、接收确认、中文输入法/拖放、真实 TUN/多层路由、Intel/AMD 和当前版本签名 MSIX 仍待验收。
+用户已反馈 Windows↔Mac 基本互通。1.2.0 汇总三栏界面、附件预览、会话管理、两页引导与网络韧性优化，Windows 11 ARM64 的原生窗口专项检查见开发日志。x64 / ARM64 自包含 EXE 交付与验证范围见 [1.2.0 交付说明](ReleaseNotes-1.2.0.md)。截至 2026-11-01，Parallels Windows 11 ARM64 已完成 Mac 群主邀请 Windows 接受、Windows 群主创建群组并添加/移除成员，以及混合拓扑下的 20 人群组广播验收（1 个 Windows owner 加同一 Mac 宿主上的 19 个隔离 macOS `TransferModel` runtime，不是 20 台实体设备）。跨端流程仍是部分验收：完整 Windows↔macOS 文件/消息与拒绝、断线恢复矩阵，Mac↔Mac、Windows↔Windows 真机矩阵，以及中文输入法/拖放、访客网络、多网卡、Intel/AMD 和当前正式包验收仍待完成。
 
-交付后源码新增文件/图片接收确认、设备名称同步、刷新状态反馈、安装签名检查及 Mac mini LAN 更新源改造。当前 Core **449/449** 测试通过（macOS .NET 11 RC runtime roll-forward 执行 net10 测试）；本轮未在 Windows .NET 10 环境重跑，WinUI 双架构与真实 UI/双机测试尚未完成。1.2.0 安装包仍对应 392 项交付基线且未更换。Mac mini 更新端点已配置，但清单和新安装包尚未发布。验收、发布边界见 [文件接收确认](FileReceiveApproval.md)、[更新接入](UpdateService.md)和[1.2.0 交付说明](ReleaseNotes-1.2.0.md)。
+交付后源码新增文件/图片接收确认、设备名称同步、刷新状态反馈、安装签名检查及 Mac mini LAN 更新源改造。截至 2026-11-01，Windows 11 ARM64 / .NET 10.0.402 来宾机的隔离当前源码副本通过 `Feige.Core.Tests` **578/578**、`Feige.App.Tests` **8/8**（ARM64 .NET host）；当前源码 `Feige.App` x64 Release **非打包编译**通过，0 警告、0 错误。来宾机没有 x64 .NET test host，未完成 x64 运行时测试。先前 macOS .NET 11 RC roll-forward 下的 449/449 为历史结果。正式签名发行包与完整安装/升级/卸载矩阵仍待完成。GitHub `v1.2.1` Release 已有安装包和校验文件，但尚无签名更新清单；Windows 更新检查、下载、验证与安装的端到端发布闭环未完成。Mac mini 更新端点已配置。验收边界见 [文件接收确认](FileReceiveApproval.md)、[更新接入](UpdateService.md)和[1.2.0 交付说明](ReleaseNotes-1.2.0.md)。
 
 开发环境已在 Windows 11 25H2 就绪，搭建步骤与版本基线见 [`Windows环境搭建.md`](EnvironmentSetup.md)。后续 Windows UI/协议修改优先在 Parallels Windows 环境构建验证；文件接收确认设计与验收矩阵见 [`Windows文件接收确认.md`](FileReceiveApproval.md)。
 
 ## 开发顺序
 
-1. 当前源码 Core 为 449 项测试通过；最新测试是在 macOS .NET 11 RC runtime roll-forward 环境执行，须由 Windows .NET 10 SDK/runtime复验。1.2.0 包仍为 392 项交付基线。接收确认、名称/刷新修复版的 WinUI ARM64/x64 构建、双机拒绝/超时/收发矩阵、最终包全量复测、真实资料升级及 Intel/AMD 实机安装待完成。Mac mini 更新端点已配置，但签名清单、更新包发布和 Windows 更新安装验收待完成。
+1. 当前源码 Windows App x64 Release 非打包编译已通过；Core 578/578、App 8/8 在 ARM64 .NET host 上通过，x64 test host 尚不可用。仍需完成签名发行包、干净安装/升级/卸载、更新清单发布与客户端端到端安装验收。GitHub `v1.2.1` Release 的签名清单缺失，详见 [Windows 更新接入文档](UpdateService.md)。
 2. 已接入 v3 会话界面和一次连接同意，继续验收文字送达/失败/重试、设备隔离、双向附件、图片缩略图与文件移走场景。
 3. 已实现身份签名预检、名称/目录持久化顺序、单实例和关闭后重开代码；继续验证中文输入法、主题、高 DPI、窗口重开和退出清理。
 4. 验证 Windows↔Windows、Windows↔macOS 的文字、图片、空文件和大文件，以及拒绝、断线、取消、重名与磁盘不足。
@@ -41,5 +41,5 @@ macOS 0.3.3 与当前 Windows 源码均使用 v3，旧 Windows v1 安装包不�
 
 ## 安全边界
 
-旧 v1 安装包与 macOS 当前 v3 格式不兼容；源码 v3 接入已完成本轮编译和核心测试，用户已确认 Windows↔Mac 基本互通，完整运行验收尚未完成。新版发布前需完成签名发行包、双机（Windows↔Windows、Windows↔macOS）完整互通验收，以及防火墙/访客网络/多网卡场景测试。
+旧 v1 安装包与 macOS 当前 v3 格式不兼容；当前源码 v3 已通过 Windows App x64 Release 非打包编译（0 警告、0 错误），Core 578/578、App 8/8 在隔离 ARM64 .NET host 上通过。来宾机缺少 x64 .NET test host，未执行 x64 运行时测试；用户已确认 Windows↔Mac 基本互通，完整运行验收尚未完成。新版发布前仍需正式签名发行包、双机（Windows↔Windows、Windows↔macOS）完整互通验收，以及防火墙/访客网络/多网卡场景测试。
 早期 Python HTTP 原型不得作为 Windows 或任何正式发布的后端服务。

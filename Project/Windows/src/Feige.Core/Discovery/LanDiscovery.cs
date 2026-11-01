@@ -29,10 +29,31 @@ public sealed class LanDiscovery : IAsyncDisposable
 
         _transport = transport ?? new UdpMdnsTransport();
         Advertiser = new MdnsAdvertiser(_transport, device, port, addresses, version);
+        V3Advertiser = version == 3 ? Advertiser : null;
+        V4Advertiser = version == 4 ? Advertiser : null;
+        Advertisers = [Advertiser];
         Browser = new PeerBrowser(_transport)
         {
             LocalInstanceLabel = Advertiser.InstanceName.FirstLabel,
-            RequiredVersion = version == 3 ? 3 : null,
+            LocalInstanceLabels = [Advertiser.InstanceName.FirstLabel],
+            RequiredVersion = version is 3 or 4 ? version : null,
+        };
+    }
+
+    /// <summary>Creates simultaneous v3 and v4 advertisements over one shared mDNS transport.</summary>
+    public LanDiscovery(LocalDevice device, int v3Port, int v4Port, IMdnsTransport? transport = null,
+                        IReadOnlyList<IPAddress>? addresses = null)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        _transport = transport ?? new UdpMdnsTransport();
+        V3Advertiser = new MdnsAdvertiser(_transport, device, v3Port, addresses, version: 3);
+        V4Advertiser = new MdnsAdvertiser(_transport, device, v4Port, addresses, version: 4);
+        Advertiser = V3Advertiser; // Compatibility alias for callers that previously read the single advertiser.
+        Advertisers = [V3Advertiser, V4Advertiser];
+        Browser = new PeerBrowser(_transport)
+        {
+            LocalInstanceLabel = V3Advertiser.InstanceName.FirstLabel,
+            LocalInstanceLabels = [V3Advertiser.InstanceName.FirstLabel, V4Advertiser.InstanceName.FirstLabel],
         };
     }
 
@@ -50,8 +71,17 @@ public sealed class LanDiscovery : IAsyncDisposable
         remove => Browser.PeerLost -= value;
     }
 
-    /// <summary>The registration half.</summary>
+    /// <summary>The primary registration half; in dual mode this aliases the v3 advertisement.</summary>
     public MdnsAdvertiser Advertiser { get; }
+
+    /// <summary>The v3 registration, when enabled.</summary>
+    public MdnsAdvertiser? V3Advertiser { get; }
+
+    /// <summary>The v4 registration, when enabled.</summary>
+    public MdnsAdvertiser? V4Advertiser { get; }
+
+    /// <summary>All local registrations sharing this discovery transport.</summary>
+    public IReadOnlyList<MdnsAdvertiser> Advertisers { get; }
 
     /// <summary>The browse half.</summary>
     public PeerBrowser Browser { get; }
@@ -64,7 +94,10 @@ public sealed class LanDiscovery : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        await Advertiser.StartAsync(cancellationToken).ConfigureAwait(false);
+        foreach (MdnsAdvertiser advertiser in Advertisers)
+        {
+            await advertiser.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
         await Browser.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -81,8 +114,11 @@ public sealed class LanDiscovery : IAsyncDisposable
 
         _disposed = true;
 
-        // Advertiser first: its goodbye must go out before the transport is closed.
-        await Advertiser.DisposeAsync().ConfigureAwait(false);
+        // Advertisers first: all their goodbyes must go out before the transport is closed.
+        foreach (MdnsAdvertiser advertiser in Advertisers)
+        {
+            await advertiser.DisposeAsync().ConfigureAwait(false);
+        }
         await Browser.DisposeAsync().ConfigureAwait(false);
         await _transport.DisposeAsync().ConfigureAwait(false);
     }

@@ -4,6 +4,75 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-01：macOS 0.4.1 build 12 Developer ID 公证包
+
+- **发行范围**：Apple Silicon arm64；最低系统版本 macOS 13。打包脚本 Release 构建通过，产物位于 `Release/MacOS/0.4.1/`：`飞鸽快传.app` 与 `FeigeMac-0.4.1.zip`。
+- **签名**：使用 `Developer ID Application: Song Li (9C8Y647J2R)`；`codesign --verify --deep --strict` 通过，签名满足指定要求。
+- **公证**：Apple notarytool submission `452e5a38-9850-4cba-a1ba-e6cc8e5c6a7e` 状态 `Accepted`；`xcrun stapler validate` 成功。
+- **系统与归档验证**：`spctl --assess --type execute --verbose=4` 返回 `accepted` / `source=Notarized Developer ID`；二进制为 arm64；`unzip -t` 无错误。zip SHA-256：`c0f1df0344f1f9d31afe62056bdb9b2441033302bdf854b0b8bc7ce1155ad299`。
+- **发布边界**：未上传飞鸽更新源，未提交 Git；`Release/MacOS/0.4.0/` 保持不变。源码自动化测试此前通过，打包脚本本轮重新完成 Release 编译。
+
+## 2026-11-01：macOS 0.4.1 build 12 正式包预检
+
+- **候选范围**：用户确认使用当前已通过 Release 源码构建/测试的工作树，候选版本为 0.4.1 build 12；`Resources/Info.plist` 已切换到该版本。已发布的 0.4.0 build 11 和其更新资产保留不动。
+- **签名与公证**：本机 `security find-identity` 结果为 Developer ID Application **0 个**、Apple Distribution **1 个**；本次环境中的 `FEIGE_SIGN_IDENTITY` 与 `FEIGE_NOTARY_PROFILE` 均未设置。打包脚本会回退选 Apple Distribution 并跳过公证，不能作为正式公网发行包。
+- **输出保护**：候选版本路径应为 `Release/MacOS/0.4.1/`。当前脚本若仍使用 0.4.0，会删除该目录中的旧 `.app` 并覆盖 zip；本轮未运行打包脚本，也未发布到更新源。
+- **架构范围**：用户已确认本候选仅支持 Apple Silicon arm64；与现有 arm64 更新通道一致。Intel/x86_64 不包含在本候选中，也不宣称已完成 Intel 运行时验收。
+- **下一步**：在本机安全配置 Developer ID Application 身份和 notarytool profile 后，生成并验证 arm64 候选 `.app`/zip。不得把私钥、密码或 profile 凭据放入仓库或对话。
+
+## 2026-11-01：macOS Release 源码构建与回归
+
+- **工具链**：本机 macOS 27 ARM64，Apple Swift 6.4.2，Xcode 27.2；目标最低版本 macOS 13。
+- **源码构建**：`swift build --package-path Project/MacOS --configuration release` 通过（Build complete，18.69 秒）。
+- **自动化回归**：`swift test --package-path Project/MacOS --configuration release` 退出码 0；输出确认 `FeigeIdentityTests` 59/59、0 失败，所有测试 runner 均通过。需显式 opt-in 的 mDNS 与 Windows LAN 验收未在本地全量回归中启用。
+- **发布边界**：本轮只构建源码并运行测试，未调用 app 打包、签名、公证或发布脚本。
+
+## 2026-11-01：Windows 群组 UI 与混合 LAN20 验收
+
+- **Windows 当前源码回归**：Parallels Windows 11 ARM64 / .NET 10.0.402 上 `Feige.Core.Tests` 578/578、`Feige.App.Tests` 8/8 通过。
+- **Mac 群主邀请 Windows**：`testMacOwnerInvitesWindowsAndWindowsAcceptsFromItsGroupsPage` 1/1 通过；Windows UI 接受邀请，成员和群文字持久化，Mac 收到回执。
+- **Windows 群组管理 UI**：`testWindowsUiGroupCreateAddAndRemoveOverLANWhenConfigured` 1/1 通过，完成建群、添加与移除成员。
+- **LAN20 群组与广播**：`testWindowsUiCreatesTwentyMemberGroupAndBroadcastsOverLANWhenConfigured` 1/1 通过，19/19 runtime 收到广播；拓扑为 1 个 Parallels Windows owner 加同一 Mac 宿主上的 19 个隔离 macOS `TransferModel` runtime，不是 20 台实体设备。
+- **容量**：39 条认证 loopback TCP 连接回归通过；持续负载资源采样仍待完成，可用隔离 runtime 验证。
+- **仍待完成**：Mac↔Mac、Windows↔Windows 实体双端矩阵、完整跨平台文件与异常路径、Windows 签名包和更新端到端验收，以及 macOS Developer ID 公证/Gatekeeper 验收。当前源码 Windows App x64 Release 非打包编译已通过（0 警告、0 错误）；Core 578/578、App 8/8 在隔离 ARM64 .NET host 上通过。当前 Windows VM 无 x64 .NET test host，未做 x64 运行时回归。20 台实体设备不是发布门槛。
+
+## 2026-10-31：Mac 群主邀请 Windows 的真实跨端闭环通过
+
+- **定位根因**：最新 Parallels Windows 实例的设备身份已变更，验收环境变量仍使用旧指纹 `0102…`。V5 握手和 Windows 接受连接都成功，但测试持续查询错误的 peer ID，造成假超时。通过 Windows 当前 DPAPI 身份仅导出公钥指纹，更新验收配置为当前身份 `3053…D6E3` 后完成联调。
+- **网络复测**：Network.framework 直连 `10.211.55.4:59403` 成功，实际路径为 `bridge100`；旧 `ENETDOWN` 未复现，不需要切换 Surge 或更改系统网络设置。
+- **流程结果**：Windows 群组页接受 Mac 群主邀请，Mac 持久化成员事务完成；Mac 发出的群文字在 Windows 群组存储中落盘并收到正向回执。Windows 存档确认两名成员、revision 0。
+- **验收测试修正**：测试比较指纹时先统一为不带空白的大写十六进制，解决紧凑与四位分组格式差异；超时 helper 改为抛出失败，避免失败后继续执行并输出误导性完成标记。加入错误指纹快速诊断。
+- **验证**：`WindowsGroupManagementAcceptanceTests/testMacOwnerInvitesWindowsAndWindowsAcceptsFromItsGroupsPage` **1/1 通过**（43.958 秒）。
+- **截至 2026-10-31 当时仍未完成**：Mac↔Mac、Windows↔Windows 实机矩阵、真实 20 人 LAN 生命周期、持续负载采样；Windows 群组页创建/成员增删的完整实际点击流程。
+
+## 2026-10-30：跨端群主邀请验收的定位记录
+
+- **场景**：在 Windows 虚拟机可交互、用户已手动点过“同意连接”的条件下，实际运行 `testMacOwnerInvitesWindowsAndWindowsAcceptsFromItsGroupsPage`（Mac 作群主，v5 连接 Windows 真实实例）。
+- **进展**：Windows 侧确实收到了 TCP 连接（日志出现 `v4 accept: EndOfStreamException` 与 `accept: IOException`），说明地址与端口正确、地址策略放行；`connectionReadiness` 返回 `ok`。
+- **定位到的问题**：Mac 侧拨号发出后立即被模型自身的 `cancelConnectionAttempts()` 取消（诊断记录显示 `1 pending → 0 pending`，随即 `CancellationError()`），因此 `channelsByPeer` 始终为空、`createGroup` 前置校验失败。该取消发生在 `TransferModel` 内部，不是网络错误，需要单独排查是谁在连接建立期间触发了清理。
+- **现状**：为定位临时加入的诊断输出与临时测试已全部移除，`TransferModel` 回到本轮前状态；应用全量 **82 项、5 项跳过、0 失败**确认未受影响。
+- **未完成**：该取消根因未修复，因此“Mac 作群主邀请 Windows → Windows 接受”的真实界面闭环仍未跑通。
+
+## 2026-10-30：群组建群、添加成员、移除成员端到端回归
+
+- **新增用例** `testGroupCreateAddMemberThenRemoveMemberKeepsRosterOrderedOnEverySide`：按 Windows 群组页的操作顺序走一遍公开模型接口——与成员一建群、通过 `addGroupMember` 加入成员二、再 `removeGroupMember` 移除成员二；每一步都断言三端成员表一致、群主身份不变，且两次成员变更各推进一次版本号（最终 revision 2）。
+- **覆盖价值**：此前的群组用例覆盖群文字、文件扇出、退出和群主移交，但缺少“添加后再移除”这一最常用的成员管理序列；该用例补上了成员增删的完整闭环。
+- **验证**：应用全量 **82 项、5 项按条件跳过、0 失败**；`GroupConversationTransferTests` 6/6、新增用例 7.5 秒通过。
+
+## 2026-10-30：发现矩阵补充验证
+
+- **Bonjour 双实例发现**：以 `FEIGE_TEST_BONJOUR=1` 运行 `testBonjourDiscoversOtherInstanceAndFiltersSelf` 通过（约 1.0 秒），确认同机双实例可互相发现且过滤自身。
+- **跨端规则一致性**：Windows 侧新增 `Discovery_AdvertisedTxtRoundTripsThroughTheSameRulesMacUses`，锁定 Windows 能解析 macOS 的 `v`/`caps` 广播；同时记录一处不对称：**Windows 目前不读取 macOS 广播中的 `fp` 键**，其对端指纹来自 `Feige-<20 位>` 实例名，本轮未修正产品行为。
+- **容量**：Windows `V4PeerTransportTests` 39 条已认证连接复测通过（56 ms）；两端上限常量一致（20 直连 + 19 群组专用 = 39）。
+- **未完成**：Mac↔Mac、Windows↔Windows 等组合的真实双机自动发现/连接矩阵，以及 Windows 界面点击验收，均受当前会话环境限制未执行。
+
+## 2026-10-30：V5 取消重启恢复回归与 Windows 群组管理验收测试
+
+- **新增 V5 取消重启恢复用例**：原 `testV5CancellationPersistsIntentAndRecipientTombstone` 只覆盖断线后重连，没有真正销毁并重建模型。新用例 `testV5CancellationResumesAfterOwnerRestartAndRecipientTombstoneSurvives` 在成员离线时发起取消，确认取消未完成且意图已落盘，然后 `shutdown()` 群主并重新构造 `TransferModel`：重启后读取持久 abort，成员重连时补发并按确认清除，双方都不提交被取消的成员表；再重启接收方，确认墓碑仍在且不出现该群组。
+- **新增 Windows 群组管理跨平台验收用例**（`WindowsGroupManagementAcceptanceTests`）：两台隔离 Mac 实例以 v5 主动连接 Windows 运行实例，自动批准连接与邀请，等待 Windows 界面创建群组、加入第二成员、随后移除第二成员，并断言三方成员表一致；未配置环境变量时跳过。配套 `WindowsGroupAcceptanceProbeTests` 用于在验收中输出实例指纹与端口并保持运行。
+- **验证**：`GroupConversationTransferTests` 5/5 通过（新增用例 2.2–2.9 秒）；应用全量 80 项、4 项按条件跳过、0 失败。
+- **未完成**：Windows 界面上的实际点击尚未执行——验收时 Parallels 虚拟机登录会话失效，计划任务无法再在会话 1 启动图形进程，`prlctl` 又只能进入 SYSTEM 的会话 0。需在虚拟机中重新登录后继续；Windows 群组页尚无可靠的 UIA 标识，界面点击需要按窗口坐标操作。
+
 ## 2026-10-29：修复更新完成提示条关闭按钮
 
 - **现象与原因**：用户反馈更新成功提示右上角关闭按钮无效。`GuidancePanel` 只通过 `TransferModel` 读取嵌套的 `UpdateController`，没有订阅其变化；按钮确实清空了 `installNotice`，但提示视图未重绘。

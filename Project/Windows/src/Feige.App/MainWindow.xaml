@@ -52,6 +52,9 @@
                 <NavigationViewItem x:Name="RecordsNavItem" Content="传输记录" Tag="receive" Margin="0,0,0,4" Height="44" ToolTipService.ToolTip="传输记录">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE8B7;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem x:Name="GroupsNavItem" Content="群组" Tag="groups" Margin="0,0,0,4" Height="44" ToolTipService.ToolTip="群组会话">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE902;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
             </NavigationView.MenuItems>
             <Frame x:Name="NavFrame" Margin="0,0,10,10" Background="{ThemeResource FeigePanelBrush}" CornerRadius="12" />
         </NavigationView>

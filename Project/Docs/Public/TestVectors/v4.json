@@ -1,0 +1,63 @@
+{
+  "format": "feige-v4-group-json-vectors",
+  "version": 4,
+  "canonicalization": "utf8-sorted-keys-compact-unescaped-slashes-unix-milliseconds-omit-nil-v1",
+  "vectors": [
+    {
+      "id": "control-invite",
+      "type": "groupControl",
+      "canonicalJson": "{\"epoch\":0,\"eventID\":\"00000000-0000-0000-0000-000000000003\",\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"kind\":\"invite\",\"name\":\"Team\",\"ownerFingerprint\":\"0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101\",\"roster\":[{\"displayName\":\"Owner\",\"fingerprint\":\"0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101\"},{\"displayName\":\"Member\",\"fingerprint\":\"0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202\"}],\"targetFingerprint\":\"0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202\",\"version\":1}",
+      "sha256Hex": "c0ddb35818529d0eb348c3ef71bcf4b56c6a8e93ee08d4709fe8431633052c49"
+    },
+    {
+      "id": "group-text",
+      "type": "groupText",
+      "canonicalJson": "{\"date\":1700000000123,\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"kind\":\"text\",\"memberRevision\":7,\"senderFingerprint\":\"0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101\",\"text\":\"Hello, 世界 👋\"}",
+      "sha256Hex": "3ea57422228f370f51335d052112bcd7b5f937b4eeec4591141b77c01617a5ec"
+    },
+    {
+      "id": "group-text-ack-accepted",
+      "type": "groupTextAck",
+      "canonicalJson": "{\"accepted\":true,\"epoch\":7,\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"messageID\":\"00000000-0000-0000-0000-000000000002\"}",
+      "sha256Hex": "e2a693e4398cd5514c432c2e3629a2d4be6e1abd5776f2aaf84a0b63f4fad467"
+    },
+    {
+      "id": "group-text-ack-rejected",
+      "type": "groupTextAck",
+      "canonicalJson": "{\"accepted\":false,\"epoch\":7,\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"messageID\":\"00000000-0000-0000-0000-000000000002\",\"reason\":\"declined\"}",
+      "sha256Hex": "7fa027ca1c3af3f316cd1ec648d0cc30e77560df03ee14b10bded97d42b2cd18"
+    }
+  ],
+  "invalidVectors": [
+    {
+      "id": "control-unknown-field",
+      "type": "groupControl",
+      "rawJson": "{\"version\":1,\"kind\":\"leave\",\"eventID\":\"00000000-0000-0000-0000-000000000003\",\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"ownerFingerprint\":\"0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101\",\"epoch\":0,\"targetFingerprint\":\"0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202 0202\",\"extra\":true}",
+      "reason": "unknown-field"
+    },
+    {
+      "id": "group-text-unknown-field",
+      "type": "groupText",
+      "rawJson": "{\"id\":\"00000000-0000-0000-0000-000000000002\",\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"senderFingerprint\":\"0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101 0101\",\"memberRevision\":7,\"date\":1700000000123,\"kind\":\"text\",\"text\":\"Hello\",\"extra\":true}",
+      "reason": "unknown-field"
+    },
+    {
+      "id": "group-text-ack-unknown-field",
+      "type": "groupTextAck",
+      "rawJson": "{\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"messageID\":\"00000000-0000-0000-0000-000000000002\",\"epoch\":7,\"accepted\":true,\"extra\":true}",
+      "reason": "unknown-field"
+    },
+    {
+      "id": "control-missing-required",
+      "type": "groupControl",
+      "rawJson": "{\"version\":1,\"kind\":\"leave\"}",
+      "reason": "missing-required"
+    },
+    {
+      "id": "group-text-ack-rejected-missing-reason",
+      "type": "groupTextAck",
+      "rawJson": "{\"groupID\":\"00000000-0000-0000-0000-000000000001\",\"messageID\":\"00000000-0000-0000-0000-000000000002\",\"epoch\":7,\"accepted\":false}",
+      "reason": "invalid-state"
+    }
+  ]
+}

@@ -8,6 +8,29 @@ namespace Feige.Core.Tests;
 
 public sealed class NetworkResilienceTests
 {
+    [Fact] public async Task Discovery_DualStackAdvertisementExposesV4IdentityAndHonorsRequiredVersion()
+    {
+        string fingerprint = new('A', 64);
+        DnsName instance = FeigeService.InstanceName("Mac dual stack", fingerprint, version: 3);
+        var host = new DnsName("mac-dual-stack", "local");
+        var packet = new MdnsMessage { IsResponse = true };
+        packet.Answers.Add(new PtrRecord(FeigeService.Type, instance));
+        packet.Additionals.Add(new SrvRecord(instance, 51_001, host));
+        packet.Additionals.Add(new TxtRecord(instance, ["v=3", "name=Mac dual stack", $"fp={fingerprint}", "caps=3,4"]));
+        packet.Additionals.Add(new AddressRecord(host, IPAddress.Parse("192.168.1.20")));
+
+        var transport = new TestTransport();
+        await using var preferred = new PeerBrowser(transport);
+        await using var v3 = new PeerBrowser(transport) { RequiredVersion = 3 };
+        await using var v4 = new PeerBrowser(transport) { RequiredVersion = 4 };
+        transport.Deliver(packet, "192.168.1.20");
+
+        Assert.Equal(4, Assert.Single(preferred.Peers).ProtocolVersion);
+        Assert.Equal(fingerprint, Assert.Single(preferred.Peers).Fingerprint);
+        Assert.Equal(3, Assert.Single(v3.Peers).ProtocolVersion);
+        Assert.Equal(4, Assert.Single(v4.Peers).ProtocolVersion);
+    }
+
     [Theory]
     [InlineData("192.168.1.20", "192.168.1.10", 24, true)]
     [InlineData("192.168.2.20", "192.168.1.10", 24, false)]
@@ -162,7 +185,21 @@ public sealed class NetworkResilienceTests
                 await stream.WriteAsync(new byte[4], deadline.Token); await Task.Delay(100, deadline.Token);
             });
             await Assert.ThrowsAsync<InvalidDataException>(() => V3PeerConnector.ConnectAsync(new[] { (IPEndPoint)broken.LocalEndpoint, (IPEndPoint)alternate.LocalEndpoint }, new LocalDevice(identity, "A"), deadline.Token));
-            await server; Assert.False(alternate.Pending());
+            await server;
+            if (alternate.Pending())
+            {
+                using TcpClient queued = await alternate.AcceptTcpClientAsync(deadline.Token);
+                using var readDeadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(750));
+                try
+                {
+                    int bytes = await queued.GetStream().ReadAsync(new byte[1], readDeadline.Token);
+                    Assert.Equal(0, bytes);
+                }
+                catch (OperationCanceledException) when (readDeadline.IsCancellationRequested)
+                {
+                    Assert.Fail("The alternate socket remained open without completing the failed handshake.");
+                }
+            }
         }
         finally { broken.Stop(); alternate.Stop(); }
     }

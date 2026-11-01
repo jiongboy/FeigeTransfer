@@ -86,7 +86,8 @@ public sealed partial class SendPage : Page
         StartupRetry.Visibility = _showNetworkAdvice || !Session.IsRunning ? Visibility.Visible : Visibility.Collapsed;
         StartupRetry.Content = _showNetworkAdvice ? "连接排查" : "继续设置";
         StartupRetry.IsEnabled = _showNetworkAdvice || !Session.IsStarting;
-        ManualButton.IsEnabled = PeerList.IsEnabled = Session.CanConnect;
+        ManualButton.IsEnabled = Session.CanConnect;
+        PeerList.IsEnabled = Session.CanConnect || Session.CanConnectV4;
         RefreshPeersButton.IsEnabled = Session.IsRunning && !Session.IsStarting && !Session.IsRefreshingPeers;
         RefreshPeersProgress.IsActive = Session.IsRefreshingPeers;
         RefreshPeersProgress.Visibility = Session.IsRefreshingPeers ? Visibility.Visible : Visibility.Collapsed;
@@ -94,19 +95,19 @@ public sealed partial class SendPage : Page
         string refreshLabel = Session.IsRefreshingPeers ? "正在刷新附近设备" : "刷新附近设备";
         ToolTipService.SetToolTip(RefreshPeersButton, refreshLabel);
         AutomationProperties.SetName(RefreshPeersButton, refreshLabel);
-        DisconnectButton.IsEnabled = Session.IsConnecting || Session.ActiveFingerprint is not null;
+        DisconnectButton.IsEnabled = Session.IsConnectingTo(_selected) || Session.IsConnected(_selected);
         if (_selected is null && !Session.IsStarting)
             ConversationList.SelectedItem = _conversationRows.FirstOrDefault(c => c.Fingerprint == Session.ActiveFingerprint) ?? _conversationRows.FirstOrDefault();
         PeerTitle.Text = _selected?.Name ?? "消息";
         PeerAvatar.Text = _selected?.AvatarText ?? "鸽";
         ConnectionState.Text = _selected is null ? "选择设备，开始安全传输" : Session.CanSend(_selected) ? "已连接 · 可以发送消息和文件" : "未连接 · 会话记录保存在本机";
-        DisconnectButton.Content = Session.IsConnecting ? "取消请求" : "断开连接";
+        DisconnectButton.Content = Session.IsConnectingTo(_selected) ? "取消请求" : "断开连接";
         bool canSend = Session.CanSend(_selected);
         Composer.IsEnabled = canSend;
         Composer.PlaceholderText = canSend ? $"发送给 {_selected!.Name}" : "连接设备后，在这里输入消息…";
-        SendButton.IsEnabled = canSend && !Session.IsSendingText && !string.IsNullOrWhiteSpace(Composer.Text);
+        SendButton.IsEnabled = canSend && !Session.IsSendingTextTo(_selected) && !string.IsNullOrWhiteSpace(Composer.Text);
         EmojiButton.IsEnabled = canSend;
-        ImagesButton.IsEnabled = FilesButton.IsEnabled = canSend && !Session.IsSendingFiles;
+        ImagesButton.IsEnabled = FilesButton.IsEnabled = canSend && !Session.IsSendingFilesTo(_selected);
         UpdateEmptyStates();
         UpdateLayoutForSize();
     }
@@ -201,11 +202,11 @@ public sealed partial class SendPage : Page
         AutomationProperties.SetAutomationId(open, "OpenConversationMenuItem");
         open.Click += (_, _) => { ConversationList.SelectedItem = target; _showConversation = true; UpdateLayoutForSize(); };
         menu.Items.Add(open);
-        if (Session.ActiveFingerprint == target.Fingerprint)
+        if (Session.IsConnected(target))
         {
             var disconnect = new MenuFlyoutItem { Text = "断开连接" };
             AutomationProperties.SetAutomationId(disconnect, "DisconnectConversationMenuItem");
-            disconnect.Click += async (_, _) => { try { await Session.DisconnectAsync(); } catch (Exception ex) { ShowError(ErrorText.Describe(ex)); } };
+            disconnect.Click += async (_, _) => { try { await Session.DisconnectAsync(target); } catch (Exception ex) { ShowError(ErrorText.Describe(ex)); } };
             menu.Items.Add(disconnect);
         }
         var hide = new MenuFlyoutItem { Text = "隐藏会话" };
@@ -366,7 +367,7 @@ public sealed partial class SendPage : Page
     private async Task PasteFilesFromClipboardAsync()
     {
         var conversation = _selected;
-        if (!Session.CanSend(conversation) || Session.IsSendingFiles) return;
+        if (!Session.CanSend(conversation) || Session.IsSendingFilesTo(conversation)) return;
         try
         {
             var items = await Clipboard.GetContent().GetStorageItemsAsync();
@@ -384,12 +385,13 @@ public sealed partial class SendPage : Page
     private async Task PasteImageFromClipboardAsync()
     {
         var conversation = _selected;
-        if (!Session.CanSend(conversation) || Session.IsSendingFiles) return;
+        if (!Session.CanSend(conversation) || Session.IsSendingFilesTo(conversation)) return;
         try
         {
             // BitmapDecoder/BitmapEncoder are plain WinRT objects, not IDisposable; only the
             // streams and the SoftwareBitmap need disposing.
-            using var stream = await Clipboard.GetContent().GetBitmapAsync();
+            var bitmap = await Clipboard.GetContent().GetBitmapAsync();
+            using var stream = await bitmap.OpenReadAsync();
             var decoder = await BitmapDecoder.CreateAsync(stream);
             // Re-encode so any clipboard bitmap payload (BMP, DIB, ...) becomes a portable PNG.
             using var pixels = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
@@ -426,7 +428,11 @@ public sealed partial class SendPage : Page
     private async void OnConnectClick(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: DiscoveredPeer peer }) return;
-        try { await Session.ConnectAsync(peer); SelectActive(); }
+        try
+        {
+            await Session.ConnectAsync(peer);
+            SelectActive();
+        }
         catch (Exception ex) { ShowConnectionError(ex); }
     }
     private void SelectActive() => ConversationList.SelectedItem = Session.Conversations.FirstOrDefault(c => c.Fingerprint == Session.ActiveFingerprint);
@@ -472,7 +478,7 @@ public sealed partial class SendPage : Page
         else ((MainWindow)App.MainWindow!).ContinueSetup();
     }
     private async void OnDisconnectClick(object sender, RoutedEventArgs e)
-    { try { await Session.DisconnectAsync(); } catch (Exception ex) { ShowError(ErrorText.Describe(ex)); } }
+    { try { await Session.DisconnectAsync(_selected); } catch (Exception ex) { ShowError(ErrorText.Describe(ex)); } }
     private async void OnImagesClick(object sender, RoutedEventArgs e) => await PickAttachmentsAsync(true);
     private async void OnFilesClick(object sender, RoutedEventArgs e) => await PickAttachmentsAsync(false);
     private async Task PickAttachmentsAsync(bool images)
@@ -490,7 +496,7 @@ public sealed partial class SendPage : Page
     }
     private void OnDragOver(object sender, DragEventArgs e)
     {
-        e.AcceptedOperation = Session.CanSend(_selected) && !Session.IsSendingFiles && e.DataView.Contains(StandardDataFormats.StorageItems)
+        e.AcceptedOperation = Session.CanSend(_selected) && !Session.IsSendingFilesTo(_selected) && e.DataView.Contains(StandardDataFormats.StorageItems)
             ? DataPackageOperation.Copy : DataPackageOperation.None;
     }
     private async void OnDrop(object sender, DragEventArgs e)

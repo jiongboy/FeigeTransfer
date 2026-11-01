@@ -23,6 +23,9 @@ public final class NetworkByteStream: ByteTransport, @unchecked Sendable {
     private var started = false
     private var isClosed = false
     private var startWaiters: [CheckedContinuation<Void, Error>] = []
+    /// Registers how to resume the operation currently suspended on a framework callback, so a
+    /// cancelled operation unwinds without tearing the transport down.
+    private let pendingAbandon = AbandonBox()
     private let requireLAN: Bool
 
     public init(host: String, port: UInt16, requireLAN: Bool = true) throws {
@@ -54,7 +57,7 @@ public final class NetworkByteStream: ByteTransport, @unchecked Sendable {
                 group.addTask { try await operation() }
                 group.addTask {
                     try await Task.sleep(for: .seconds(timeout))
-                    // Cancelling a task alone does not resume Network.framework callbacks.
+                    // A real timeout invalidates the stream: the peer stopped responding.
                     self.close()
                     throw AuthenticatedStreamError.timeout
                 }
@@ -63,8 +66,17 @@ public final class NetworkByteStream: ByteTransport, @unchecked Sendable {
                 return result
             }
         } onCancel: {
-            self.close()
+            // Caller-driven cancellation abandons this one operation, not the connection: the
+            // handshake deadline cancels its read group and the session must stay usable. Resuming
+            // the pending Network.framework callback keeps the continuation from leaking.
+            self.abandonPendingOperation()
         }
+    }
+
+    /// Resumes the operation that is suspended on a Network.framework callback, if any, so a
+    /// cancelled `send`/`receive` returns instead of hanging while the transport stays open.
+    private func abandonPendingOperation() {
+        pendingAbandon.call()
     }
 
     public func start(timeout: TimeInterval = 10) async throws {
@@ -112,9 +124,12 @@ public final class NetworkByteStream: ByteTransport, @unchecked Sendable {
         }
         try await timed(timeout: timeout) {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let resume = Suspension(continuation)
+                self.pendingAbandon.set { resume.fail(AuthenticatedStreamError.cancelled) }
                 self.connection.send(content: data, completion: .contentProcessed { error in
-                    if let error { continuation.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription)) }
-                    else { continuation.resume(returning: ()) }
+                    self.pendingAbandon.clear()
+                    if let error { resume.fail(NetworkTransportError.connectionFailed(error.localizedDescription)) }
+                    else { resume.succeed(()) }
                 })
             }
         }
@@ -127,11 +142,14 @@ public final class NetworkByteStream: ByteTransport, @unchecked Sendable {
         }
         return try await timed(timeout: timeout) {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                let resume = Suspension(continuation)
+                self.pendingAbandon.set { resume.fail(AuthenticatedStreamError.cancelled) }
                 self.connection.receive(minimumIncompleteLength: 1, maximumLength: maximumLength) { data, _, complete, error in
-                    if let error { continuation.resume(throwing: NetworkTransportError.connectionFailed(error.localizedDescription)) }
-                    else if let data, !data.isEmpty { continuation.resume(returning: data) }
-                    else if complete { continuation.resume(throwing: AuthenticatedStreamError.unexpectedEOF) }
-                    else { continuation.resume(throwing: AuthenticatedStreamError.truncated) }
+                    self.pendingAbandon.clear()
+                    if let error { resume.fail(NetworkTransportError.connectionFailed(error.localizedDescription)) }
+                    else if let data, !data.isEmpty { resume.succeed(data) }
+                    else if complete { resume.fail(AuthenticatedStreamError.unexpectedEOF) }
+                    else { resume.fail(AuthenticatedStreamError.truncated) }
                 }
             }
         }
@@ -158,4 +176,25 @@ public final class NetworkByteStream: ByteTransport, @unchecked Sendable {
             }
         }
     }
+}
+
+/// Holds the abort hook for the operation currently suspended on a framework callback.
+private final class AbandonBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hook: (@Sendable () -> Void)?
+    func set(_ next: @escaping @Sendable () -> Void) { lock.lock(); hook = next; lock.unlock() }
+    func clear() { lock.lock(); hook = nil; lock.unlock() }
+    func call() { lock.lock(); let current = hook; hook = nil; lock.unlock(); current?() }
+    var pointee: (@Sendable () -> Void)? {
+        lock.lock(); defer { lock.unlock() }; return hook
+    }
+}
+
+/// Resumes a continuation exactly once, whichever side reports first.
+private final class Suspension<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
+    func succeed(_ value: T) { lock.lock(); let c = continuation; continuation = nil; lock.unlock(); c?.resume(returning: value) }
+    func fail(_ error: Error) { lock.lock(); let c = continuation; continuation = nil; lock.unlock(); c?.resume(throwing: error) }
 }

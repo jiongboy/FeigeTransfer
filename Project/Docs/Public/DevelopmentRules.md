@@ -36,7 +36,7 @@ The current shared protocol target is [protocol v3](ProtocolV3.md), with interac
 - Prevent path traversal, symlink attacks and platform-invalid paths. Never overwrite an existing target. Acknowledge and record success only after digest/size validation, flush and atomic commit.
 - Mark text delivered only after the receiver persists it and returns a matching UUID receipt; delivery is not read status. Deduplicate text retries. File retries are not resumable and do not provide exactly-once guarantees.
 - Disconnect, failure and cancellation must never create false success. Keep committed files; remove uncommitted temporary files. If cancelling an attachment closes the live connection, present that consistently on both clients.
-- Group conversations by full identity fingerprint, not displayed name. Only one active peer is supported; viewing another conversation must not misroute a message. Retention must keep active queued items.
+- Group conversations are keyed by group ID and members by full identity fingerprint, never displayed name. Direct conversations are keyed by peer fingerprint. Switching views must not misroute a message; retention must keep active queued items.
 - Logs must not contain login passwords, message/file contents, private key material or sensitive full paths. Local conversation data and diagnostic logs have distinct retention/protection needs. There is no cloud sync or offline delivery.
 
 ## 5. UI and window behavior

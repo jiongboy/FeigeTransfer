@@ -27,7 +27,11 @@ public struct PendingPeerApproval: Sendable {
     public let sas: String
 }
 
-/// Symmetric four-message signed key-exchange over an already connected byte stream.
+public struct ResponderHandshakeResult: Sendable {
+    public let handshake: FeigeHandshake
+    public let approval: PendingPeerApproval
+}
+
 /// No session keys or application records are enabled here; callers must display peer
 /// fingerprint/SAS and get local user approval before calling deriveSession.
 public enum AuthenticatedHandshakeExchange {
@@ -62,8 +66,43 @@ public enum AuthenticatedHandshakeExchange {
                                    peerSignature: peerProof.signature, sas: transcript.sas)
     }
 
+    /// Responder-side exchange that accepts only explicitly supported initiator versions.
+    /// The initiator's offer chooses the exact version; there is no retry or downgrade path.
+    public static func performResponder(identity: DeviceIdentity, deviceName: String, transport: ByteTransport,
+                                        timeout: TimeInterval = 15, proofTimeout: TimeInterval? = nil,
+                                        onStage: @escaping @Sendable (HandshakeStage) async -> Void = { _ in }) async throws -> ResponderHandshakeResult {
+        await onStage(.exchangingOffers)
+        let peerEnvelope: OfferEnvelope = try await readFrame(transport: transport, as: OfferEnvelope.self, timeout: timeout)
+        let peer = peerEnvelope.offer
+        guard peer.role == .initiator, peer.version == 3 || peer.version == 4 || peer.version == 5 else {
+            throw HandshakeError.invalidOffer
+        }
+        let local = try FeigeHandshake(identity: identity, role: .responder, deviceName: deviceName,
+                                       sessionCode: "", version: peer.version)
+        try await writeFrame(OfferEnvelope(offer: local.offer), transport: transport, timeout: timeout)
+        let transcript = try HandshakeTranscript.validated(local: local.offer, peer: peer)
+        await onStage(.authorizingIdentity)
+        let localSignature = try await Task.detached(priority: .userInitiated) {
+            try local.sign(transcript)
+        }.value
+        try Task.checkCancellation()
+        try await writeFrame(ProofEnvelope(offer: local.offer, signature: localSignature), transport: transport, timeout: timeout)
+        await onStage(.waitingForPeer)
+        let peerProof: ProofEnvelope = try await readFrame(transport: transport, as: ProofEnvelope.self,
+                                                            timeout: proofTimeout ?? timeout)
+        guard peerProof.offer == peer else { throw HandshakeExchangeError.malformedMessage }
+        let fingerprint = HandshakeTranscript.fingerprint(peer.identityPublicKeyDER)
+        try FeigeHandshake.verify(peerProof.signature, transcript: transcript, signer: peer,
+                                  expectedFingerprint: fingerprint)
+        await onStage(.verified)
+        let approval = PendingPeerApproval(peer: peer, peerFingerprint: fingerprint,
+                                           transcript: transcript, localSignature: localSignature,
+                                           peerSignature: peerProof.signature, sas: transcript.sas)
+        return ResponderHandshakeResult(handshake: local, approval: approval)
+    }
+
     private static func writeFrame<T: Encodable>(_ message: T, transport: ByteTransport,
-                                                  timeout: TimeInterval) async throws {
+                                                   timeout: TimeInterval) async throws {
         let payload = try JSONEncoder().encode(message)
         guard !payload.isEmpty, payload.count <= maximumMessageLength else { throw HandshakeExchangeError.malformedMessage }
         var length = UInt32(payload.count).bigEndian

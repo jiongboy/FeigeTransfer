@@ -5,5 +5,6 @@ struct LANDevice: Identifiable, Hashable, Sendable {
     let serviceName: String
     let displayName: String
     let endpoint: NWEndpoint
+    var protocolVersions: Set<UInt16> = [3]
     var addressDescription: String { endpoint.debugDescription }
 }

@@ -32,12 +32,33 @@ public sealed class AppSession
     private readonly SemaphoreSlim _startup = new(1);
     private CancellationTokenSource? _connectionCts;
     private V3Connection? _connection;
-    private Task? _acceptLoop, _runner;
+    private V4Connection? _v4Connection;
+    private PeerConnectionRegistry<V4Connection>? _v4Connections;
+    public V4GroupAppService? Groups { get; private set; }
+    private sealed class V4PeerRuntime(V4Connection connection, CancellationTokenSource cancellation)
+    {
+        public V4Connection Connection { get; } = connection;
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+        public V4GroupConnectionRouter? GroupRouter { get; set; }
+        public Task? Runner { get; set; }
+    }
+    private readonly object _v4Gate = new();
+    private readonly Dictionary<string, V4PeerRuntime> _v4Runtimes = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CancellationTokenSource> _v4Pending = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource> _v4PendingByPeer = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _sendingTextPeers = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _sendingFilePeers = new(StringComparer.Ordinal);
+    private int _v4Connecting;
+    private int _v4GroupConnecting;
+    private bool _groupRosterSubscribed;
+    private Task? _acceptLoop, _v4AcceptLoop, _runner;
     private CancellationTokenSource? _networkCts, _networkRefreshDelay;
     private int _connectionSlot, _sendingFiles, _sendingText;
+    private bool V4GroupRoutingReady => Groups is not null;
     private bool _networkReady;
     private readonly UpdateWorkGate _updateWork = new();
     private readonly Dictionary<(string Fingerprint, Guid TransferId), TaskCompletionSource<bool>> _incomingDecisions = [];
+    private readonly Dictionary<(string Fingerprint, Guid TransferId), IDisposable> _v4IncomingWork = [];
     private readonly object _incomingDecisionGate = new();
     public bool IsInstallingUpdate => _updateWork.IsInstalling;
     public bool HasUpdateWork => _updateWork.HasActiveWork;
@@ -57,12 +78,14 @@ public sealed class AppSession
     public IdentityKey? Identity { get; private set; }
     public LocalDevice? Device { get; private set; }
     public V3PeerListener? Listener { get; private set; }
+    public V4PeerListener? V4Listener { get; private set; }
     public LanDiscovery? Discovery { get; private set; }
     public AppSettings Settings { get; private set; } = AppSettings.Load();
     public string Status { get; private set; } = "正在准备安全连接…";
     public string? ActiveFingerprint { get; private set; }
     public int ListenPort => Listener?.Port ?? 0;
-    public bool IsRunning => _networkReady && Listener is not null && FolderReady && Identity is not null;
+    public int V4ListenPort => V4Listener?.Port ?? 0;
+    public bool IsRunning => _networkReady && Listener is not null && V4Listener is not null && FolderReady && Identity is not null;
     public bool FolderReady { get; private set; }
     public string IdentityStatus { get; private set; } = "等待准备";
     public string FolderStatus { get; private set; } = "等待检查";
@@ -74,11 +97,25 @@ public sealed class AppSession
     public bool IsRefreshingPeers { get; private set; }
     public DateTimeOffset? LastPeerRefreshAt { get; private set; }
     public bool PeerRefreshFailed { get; private set; }
-    public bool IsConnecting => _connectionSlot != 0 && _connection is null;
+    public bool IsConnecting => (_connectionSlot != 0 && _connection is null) || Volatile.Read(ref _v4Connecting) != 0 || Volatile.Read(ref _v4GroupConnecting) != 0;
     public bool IsSendingFiles => _sendingFiles != 0;
     public bool IsSendingText => _sendingText != 0;
     public bool CanConnect => IsRunning && !IsStarting && !IsInstallingUpdate && Settings.Setup.Ended && _connectionSlot == 0;
-    public bool CanSend(ConversationItem? conversation) => !IsInstallingUpdate && conversation is not null && _connection is not null && conversation.Fingerprint == ActiveFingerprint;
+    public bool CanConnectV4 => IsRunning && !IsStarting && !IsInstallingUpdate && Settings.Setup.Ended &&
+        (_v4Connections?.DirectPeerCount ?? 0) + Volatile.Read(ref _v4Connecting) < PeerConnectionRegistry<V4Connection>.MaximumDirectPeers;
+    public bool IsConnectingTo(ConversationItem? conversation) => conversation is null
+        ? IsConnecting
+        : _v4PendingByPeer.ContainsKey(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint)) ||
+          (_connectionSlot != 0 && _connection is null && _v4PendingByPeer.Count == 0);
+    public bool IsConnected(ConversationItem? conversation)
+    {
+        if (conversation is null) return false;
+        string fingerprint = ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        return (_connection is not null && SameFingerprint(_connection.PeerFingerprint, fingerprint)) || (_v4Connections?.TryGet(fingerprint, out _) ?? false);
+    }
+    public bool IsSendingTextTo(ConversationItem? conversation) => conversation is not null && _sendingTextPeers.ContainsKey(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint));
+    public bool IsSendingFilesTo(ConversationItem? conversation) => conversation is not null && _sendingFilePeers.ContainsKey(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint));
+    public bool CanSend(ConversationItem? conversation) => !IsInstallingUpdate && conversation is not null && IsConnected(conversation);
     public void Initialize(DispatcherQueue dispatcher)
     {
         _dispatcher = dispatcher;
@@ -187,6 +224,17 @@ public sealed class AppSession
                 }
                 catch { identity.Dispose(); throw; }
             }
+            PeerConnectionRegistry<V4Connection> registry = _v4Connections ??= new PeerConnectionRegistry<V4Connection>(ConversationHistory.NormalizeFingerprint(Identity!.Fingerprint));
+            V4GroupAppService groups = Groups ??= new V4GroupAppService(AppSettings.AppDataFolder, Identity!.Fingerprint,
+                peer => registry.TryGet(peer, out var connected) ? connected : null);
+            if (!_groupRosterSubscribed)
+            {
+                groups.Groups.CollectionChanged += (_, _) => Post(ConnectEligibleGroupPeers);
+                _groupRosterSubscribed = true;
+            }
+            groups.SetRegistry(registry);
+            groups.EventReceived -= OnGroupEventReceived;
+            groups.EventReceived += OnGroupEventReceived;
             IdentityStatus = "已就绪"; Changed();
             stage = "folder";
             if (!FolderReady)
@@ -202,14 +250,17 @@ public sealed class AppSession
             _networkCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             using var stopNetwork = ct.Register(() => _networkCts?.Cancel());
             Listener = new V3PeerListener(); Listener.Start();
+            V4Listener = new V4PeerListener(); V4Listener.Start();
             await StartDiscoveryAsync(Device, _networkCts.Token);
             ct.ThrowIfCancellationRequested();
             _networkReady = true;
+            ConnectEligibleGroupPeers();
             NetworkStatus = DiscoveryIssue is null ? "查找附近设备" : "直连已就绪，自动发现暂不可用";
             var networkToken = _networkCts.Token;
             _acceptLoop = Task.Run(() => AcceptLoopAsync(networkToken));
-            Publish(DiscoveryIssue is null ? $"已就绪 · {Device.DeviceName} · 端口 {ListenPort}" : "自动发现暂不可用，可刷新或手动连接。");
-            AppLog.Write($"started: protocol=3 listener={ListenPort} messages={_messages!.Messages.Count}");
+            _v4AcceptLoop = Task.Run(() => V4AcceptLoopAsync(networkToken));
+            Publish(DiscoveryIssue is null ? $"已就绪 · {Device.DeviceName} · v3/v4 端口 {ListenPort}/{V4ListenPort}" : "自动发现暂不可用，可刷新或手动连接。");
+            AppLog.Write($"started: protocol=3,4 listeners={ListenPort},{V4ListenPort} messages={_messages!.Messages.Count}");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -239,8 +290,10 @@ public sealed class AppSession
         _networkReady = false; _networkCts?.Cancel();
         if (Discovery is not null) await Discovery.DisposeAsync();
         if (Listener is not null) await Listener.DisposeAsync();
+        if (V4Listener is not null) await V4Listener.DisposeAsync();
         if (_acceptLoop is not null) { try { await _acceptLoop; } catch (OperationCanceledException) { } }
-        Discovery = null; Listener = null; _acceptLoop = null;
+        if (_v4AcceptLoop is not null) { try { await _v4AcceptLoop; } catch (OperationCanceledException) { } }
+        Discovery = null; Listener = null; V4Listener = null; _acceptLoop = null; _v4AcceptLoop = null;
         _networkCts?.Dispose(); _networkCts = null; DiscoveryIssue = null; Peers.Clear();
     }
 
@@ -248,7 +301,15 @@ public sealed class AppSession
     {
         DiscoveryIssue = null;
         var discovery = CreateDiscovery(device); Discovery = discovery;
-        try { await discovery.StartAsync(ct); }
+        try
+        {
+            if (V4GroupRoutingReady) await discovery.StartAsync(ct);
+            else
+            {
+                await discovery.V3Advertiser!.StartAsync(ct);
+                await discovery.Browser.StartAsync(ct);
+            }
+        }
         catch (Exception ex) when (ex is SocketException or NetworkInformationException)
         {
             Discovery = null;
@@ -278,25 +339,84 @@ public sealed class AppSession
 
     private LanDiscovery CreateDiscovery(LocalDevice device)
     {
-        var discovery = new LanDiscovery(device, ListenPort, version: 3);
-        discovery.PeerFound += (_, peer) => Post(() =>
+        var discovery = new LanDiscovery(device, ListenPort, V4ListenPort);
+        discovery.PeerFound += (_, peer) =>
         {
-            if (!ReferenceEquals(Discovery, discovery)) return;
-            // IPv4/IPv6 callbacks may reach the dispatcher out of order; always apply the current snapshot.
-            var current = discovery.Peers.FirstOrDefault(p => p.Instance == peer.Instance);
-            if (current is null) return;
-            foreach (var conversation in Conversations) conversation.ApplyDiscoveredName(current);
-            var existing = Peers.FirstOrDefault(p => p.Instance == peer.Instance);
-            if (existing is not null) Peers[Peers.IndexOf(existing)] = current; else Peers.Add(current);
-        });
+            Post(() =>
+            {
+                if (!ReferenceEquals(Discovery, discovery)) return;
+                var identity = PeerIdentity(peer);
+                var preferred = discovery.Peers
+                    .Where(candidate => PeerIdentity(candidate) == identity)
+                    .OrderByDescending(candidate => candidate.ProtocolVersion)
+                    .FirstOrDefault();
+                if (preferred is null) return;
+                foreach (var conversation in Conversations) conversation.ApplyDiscoveredName(preferred);
+                var existing = Peers.FirstOrDefault(candidate => PeerIdentity(candidate) == identity);
+                if (existing is not null) Peers[Peers.IndexOf(existing)] = preferred; else Peers.Add(preferred);
+                ConnectEligibleGroupPeers();
+            });
+        };
         discovery.PeerLost += (_, peer) => Post(() =>
         {
-            if (!ReferenceEquals(Discovery, discovery) || discovery.Peers.Any(p => p.Instance == peer.Instance)) return;
-            var existing = Peers.FirstOrDefault(p => p.Instance == peer.Instance);
-            if (existing is not null) Peers.Remove(existing);
+            if (!ReferenceEquals(Discovery, discovery)) return;
+            var identity = PeerIdentity(peer);
+            var preferred = discovery.Peers
+                .Where(candidate => PeerIdentity(candidate) == identity)
+                .OrderByDescending(candidate => candidate.ProtocolVersion)
+                .FirstOrDefault();
+            var existing = Peers.FirstOrDefault(candidate => PeerIdentity(candidate) == identity);
+            if (preferred is null)
+            {
+                if (existing is not null) Peers.Remove(existing);
+            }
+            else if (existing is not null) Peers[Peers.IndexOf(existing)] = preferred;
+            else Peers.Add(preferred);
         });
         return discovery;
     }
+
+    private void ConnectEligibleGroupPeers()
+    {
+        if (!V4GroupRoutingReady || !IsRunning || Groups is null || Identity is null || _v4Connections is null)
+        {
+            return;
+        }
+        string local = ConversationHistory.NormalizeFingerprint(Identity.Fingerprint);
+        foreach (GroupConversation group in Groups.Groups)
+        {
+            bool localMember = group.Members.Any(member => SameFingerprint(member.Fingerprint, local));
+            if (!localMember) continue;
+            foreach (GroupMember member in group.Members)
+            {
+                string peerFingerprint = ConversationHistory.NormalizeFingerprint(member.Fingerprint);
+                if (peerFingerprint == local || string.CompareOrdinal(local, peerFingerprint) >= 0) continue;
+                if (_v4Connections.TryGet(peerFingerprint, out var active) && active is { IsClosed: false }) continue;
+                if (_v4PendingByPeer.ContainsKey(peerFingerprint)) continue;
+                DiscoveredPeer? peer = Peers.FirstOrDefault(candidate => candidate.ProtocolVersion >= 4 &&
+                    !string.IsNullOrWhiteSpace(candidate.Fingerprint) &&
+                    ConversationHistory.NormalizeFingerprint(candidate.Fingerprint) == peerFingerprint);
+                if (peer is not null) _ = ConnectGroupPeerAsync(peer);
+            }
+        }
+    }
+
+    private async Task ConnectGroupPeerAsync(DiscoveredPeer peer)
+    {
+        if (string.IsNullOrWhiteSpace(peer.Fingerprint)) return;
+        string fingerprint = ConversationHistory.NormalizeFingerprint(peer.Fingerprint);
+        try { await ConnectAsync(peer.EndPoints, peer.ProtocolVersion, fingerprint, direct: false); }
+        catch (OperationCanceledException) { }
+        catch (Exception) { }
+    }
+
+    private static bool SameFingerprint(string first, string second)
+        => ConversationHistory.NormalizeFingerprint(first) == ConversationHistory.NormalizeFingerprint(second);
+
+    private static string PeerIdentity(DiscoveredPeer peer)
+        => string.IsNullOrWhiteSpace(peer.Fingerprint)
+            ? "instance:" + peer.Instance
+            : "fingerprint:" + ConversationHistory.NormalizeFingerprint(peer.Fingerprint);
 
     public async Task RefreshPeersAsync()
     {
@@ -317,27 +437,127 @@ public sealed class AppSession
         finally { IsRefreshingPeers = false; Changed(); }
     }
 
-    public Task ConnectAsync(IPEndPoint endpoint) => ConnectAsync(new[] { endpoint });
-    public Task ConnectAsync(DiscoveredPeer peer) => ConnectAsync(peer.EndPoints);
-    private async Task ConnectAsync(IReadOnlyList<IPEndPoint> endpoints)
+    public Task ConnectAsync(IPEndPoint endpoint) => ConnectAsync([endpoint], 3);
+    public Task ConnectAsync(DiscoveredPeer peer) => peer.ProtocolVersion switch
+    {
+        3 => ConnectAsync(peer.EndPoints, 3),
+        4 when !string.IsNullOrWhiteSpace(peer.Fingerprint) => ConnectAsync(peer.EndPoints, 4, ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
+        4 => Task.FromException(new InvalidOperationException("发现信息未包含有效的 v4 设备身份，请刷新设备列表后重试。")),
+        5 when !string.IsNullOrWhiteSpace(peer.Fingerprint) => ConnectAsync(peer.EndPoints, 5, ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
+        5 => Task.FromException(new InvalidOperationException("发现信息未包含有效的 v5 设备身份，请刷新设备列表后重试。")),
+        _ => Task.FromException(new InvalidOperationException("对方未公布受支持的协议版本，请刷新设备列表后重试。")),
+    };
+
+    private async Task ConnectAsync(IReadOnlyList<IPEndPoint> endpoints, int protocolVersion, string? expectedFingerprint = null,
+        bool direct = true)
     {
         using var work = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后连接。");
         if (!IsRunning || !Settings.Setup.Ended || Device is null) throw new InvalidOperationException("安全连接尚未准备好，请稍后重试。");
-        if (Interlocked.CompareExchange(ref _connectionSlot, 1, 0) != 0) throw new InvalidOperationException("请先断开当前连接。");
-        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        _connectionCts = cancellation; Changed();
+        if (protocolVersion >= 4 && expectedFingerprint is not null && _v4Connections is not null &&
+            _v4Connections.TryGet(expectedFingerprint, out var existing) && existing is not null)
+        {
+            if (existing.IsClosed) _v4Connections.Remove(expectedFingerprint, existing);
+            else
+            {
+                if (direct && !_v4Connections.IsDirect(expectedFingerprint))
+                    _v4Connections.Register(existing, expectedFingerprint, existing.InitiatorFingerprint, existing.TranscriptDigest, direct: true);
+                if (direct)
+                    await OnUiAsync(() =>
+                    {
+                        _v4Connection = existing; ActiveFingerprint = expectedFingerprint;
+                        var conversation = FindConversation(expectedFingerprint, existing.PeerName);
+                        conversation.Name = existing.PeerName; conversation.State = "已连接";
+                        Publish("已连接 · " + existing.PeerName); Changed();
+                    });
+                return;
+            }
+        }
+        bool groupOnlyReservation = protocolVersion >= 4 && !direct;
+        if (protocolVersion == 3)
+        {
+            if (Interlocked.CompareExchange(ref _connectionSlot, 1, 0) != 0) throw new InvalidOperationException("v3 当前仅支持一个活动连接。");
+        }
+        else if (protocolVersion >= 4)
+        {
+            if (_v4Connections is null) throw new InvalidOperationException("v4 连接注册表尚未准备好。");
+            if (direct)
+            {
+                if (_v4Connections.DirectPeerCount + Volatile.Read(ref _v4Connecting) >= PeerConnectionRegistry<V4Connection>.MaximumDirectPeers)
+                    throw new InvalidOperationException("直连设备已达到 20 台上限。");
+                Interlocked.Increment(ref _v4Connecting);
+            }
+            else
+            {
+                int groupOnlyCount = _v4Connections.ConnectionCount - _v4Connections.DirectPeerCount;
+                if (groupOnlyCount + Volatile.Read(ref _v4GroupConnecting) >= PeerConnectionRegistry<V4Connection>.MaximumGroupOnlyPeers ||
+                    _v4Connections.ConnectionCount + Volatile.Read(ref _v4Connecting) + Volatile.Read(ref _v4GroupConnecting) >= PeerConnectionRegistry<V4Connection>.MaximumConnections)
+                    throw new InvalidOperationException("群组专用连接已达到容量上限。");
+                Interlocked.Increment(ref _v4GroupConnecting);
+            }
+        }
+        else throw new InvalidOperationException("不支持的协议版本。");
+
+        var networkToken = _networkCts?.Token ?? _lifetime.Token;
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, networkToken);
+        Guid pendingId = Guid.NewGuid();
+        if (protocolVersion == 3) _connectionCts = cancellation;
+        else
+        {
+            _v4Pending[pendingId] = cancellation;
+            if (expectedFingerprint is not null && !_v4PendingByPeer.TryAdd(expectedFingerprint, cancellation))
+            {
+                _v4Pending.TryRemove(pendingId, out _);
+                if (groupOnlyReservation) Interlocked.Decrement(ref _v4GroupConnecting);
+                else Interlocked.Decrement(ref _v4Connecting);
+                cancellation.Dispose();
+                throw new InvalidOperationException("正在连接此设备，请稍后重试。");
+            }
+        }
+        Changed();
         bool attached = false;
         try
         {
-            Publish("正在建立网络、交换并验证设备身份，随后等待对方同意…");
-            var connection = await Task.Run(() => V3PeerConnector.ConnectAsync(endpoints, Device, cancellation.Token));
-            try { cancellation.Token.ThrowIfCancellationRequested(); await AttachAsync(connection, cancellation); attached = true; }
-            catch { connection.Close(); throw; }
+            Publish(direct ? "正在建立网络、交换并验证设备身份，随后等待对方同意…" : "正在建立已批准群成员的安全连接…");
+            if (protocolVersion == 3)
+            {
+                var connection = await Task.Run(() => V3PeerConnector.ConnectAsync(endpoints, Device, cancellation.Token));
+                try { cancellation.Token.ThrowIfCancellationRequested(); await AttachAsync(connection, cancellation); attached = true; }
+                catch { connection.Close(); throw; }
+            }
+            else
+            {
+                var connection = await Task.Run(() => V4PeerConnector.ConnectAsync(endpoints, Device,
+                    checked((ushort)protocolVersion), cancellation.Token));
+                try
+                {
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    if (expectedFingerprint is not null && ConversationHistory.NormalizeFingerprint(connection.PeerFingerprint) != expectedFingerprint)
+                        throw new InvalidDataException("连接设备身份与发现信息不一致。");
+                    attached = await AttachV4Async(connection, cancellation, direct);
+                }
+                catch { connection.Close(); throw; }
+            }
         }
-        catch (Exception ex) { Fail(ErrorText.Describe(ex)); throw; }
+        catch (Exception ex)
+        {
+            if (direct) Fail(ErrorText.Describe(ex));
+            throw;
+        }
         finally
         {
-            if (!attached) { _connectionCts = null; cancellation.Dispose(); Interlocked.Exchange(ref _connectionSlot, 0); Changed(); }
+            if (protocolVersion == 3)
+            {
+                if (!attached) { _connectionCts = null; cancellation.Dispose(); Interlocked.Exchange(ref _connectionSlot, 0); Changed(); }
+            }
+            else
+            {
+                _v4Pending.TryRemove(pendingId, out _);
+                if (expectedFingerprint is not null) _v4PendingByPeer.TryRemove(expectedFingerprint, out _);
+                if (groupOnlyReservation) Interlocked.Decrement(ref _v4GroupConnecting);
+                else Interlocked.Decrement(ref _v4Connecting);
+                if (!attached) cancellation.Dispose();
+                Changed();
+            }
         }
     }
 
@@ -377,6 +597,49 @@ public sealed class AppSession
                     if (reserved) { _connectionCts = null; Interlocked.Exchange(ref _connectionSlot, 0); Changed(); }
                     cancellation.Dispose();
                 }
+            }
+        }
+    }
+
+    private Task V4AcceptLoopAsync(CancellationToken networkToken)
+        => Task.WhenAll(Enumerable.Range(0, PeerConnectionRegistry<V4Connection>.MaximumDirectPeers)
+            .Select(_ => V4AcceptWorkerAsync(networkToken)));
+
+    private async Task V4AcceptWorkerAsync(CancellationToken networkToken)
+    {
+        while (!networkToken.IsCancellationRequested)
+        {
+            var cancellation = CancellationTokenSource.CreateLinkedTokenSource(networkToken);
+            bool attached = false;
+            IDisposable? acceptingWork = null;
+            V4Connection? candidate = null;
+            try
+            {
+                candidate = await V4Listener!.AcceptAsync(() => Device!, async (name, ct) =>
+                {
+                    if (!Settings.Setup.Ended || !IsRunning || _v4Connections is null) return false;
+                    acceptingWork = _updateWork.TryEnter();
+                    if (acceptingWork is null) return false;
+                    Publish("收到 v4 连接请求，等待本机同意…"); Changed();
+                    return await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, ct);
+                }, cancellation.Token);
+                cancellation.Token.ThrowIfCancellationRequested();
+                AppLog.Write($"v4 accept: mounted peer={candidate.PeerFingerprint[..Math.Min(8, candidate.PeerFingerprint.Length)]}");
+                attached = await AttachV4Async(candidate, cancellation);
+                AppLog.Write($"v4 accept: attached={attached}");
+                if (!attached) candidate.Close();
+            }
+            catch (OperationCanceledException) when (networkToken.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                AppLog.Write($"v4 accept: {ex.GetType().Name}: {ex.Message}");
+                candidate?.Close();
+                Publish("v4 连接未建立：" + ErrorText.Describe(ex));
+            }
+            finally
+            {
+                acceptingWork?.Dispose();
+                if (!attached) cancellation.Dispose();
             }
         }
     }
@@ -490,6 +753,181 @@ public sealed class AppSession
         _runner = Task.Run(() => RunConnectionAsync(connection, fingerprint, cancellation));
     }
 
+    private async Task<bool> AttachV4Async(V4Connection connection, CancellationTokenSource cancellation, bool? directIntent = null)
+    {
+        string fingerprint = ConversationHistory.NormalizeFingerprint(connection.PeerFingerprint);
+        bool isGroupMember = Groups?.Groups.Any(group => group.Members.Any(member => SameFingerprint(member.Fingerprint, fingerprint))) == true;
+        bool hasPrivateHistory = _messages?.Messages.Any(message => message.Fingerprint == fingerprint) == true;
+        bool direct = directIntent ?? (!isGroupMember || hasPrivateHistory);
+        if (!direct && !isGroupMember) throw new InvalidDataException("群组专用连接的对端不是本机已确认的群组成员。");
+        V4PeerRuntime runtime;
+        connection.TextReceived = async message =>
+        {
+            using var incomingWork = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后接收消息。");
+            await SaveAsync(new(message.Id, fingerprint, connection.PeerName, TransferDirection.Received,
+                MessageKind.Text, MessageState.Received, DateTimeOffset.Now, Text: message.Text));
+        };
+        connection.FileReceiving = async file =>
+        {
+            IDisposable? incomingWork = _updateWork.TryEnter();
+            if (incomingWork is null) return false;
+            var message = new ConversationMessage(file.TransferID, fingerprint, connection.PeerName, TransferDirection.Received,
+                file.Kind == "image" ? MessageKind.Image : MessageKind.File, MessageState.Sending, DateTimeOffset.Now,
+                FileName: file.FileName, Size: file.Size, Error: "等待确认接收");
+            try
+            {
+                await SaveAsync(message);
+                var decision = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                lock (_incomingDecisionGate)
+                {
+                    if (!_incomingDecisions.TryAdd((fingerprint, file.TransferID), decision))
+                        throw new InvalidDataException("重复的文件接收请求。");
+                }
+                await OnUiAsync(() =>
+                {
+                    var conversation = FindConversation(fingerprint, connection.PeerName);
+                    if (!conversation.Messages.Any(item => item.Id == file.TransferID && item.Entry.Direction == TransferDirection.Received))
+                        conversation.Messages.Add(new MessageItem(message));
+                    Changed();
+                });
+                if (cancellation.IsCancellationRequested || !_v4Connections!.TryGet(fingerprint, out var active) || !ReferenceEquals(active, connection)) decision.TrySetCanceled(cancellation.Token);
+                using var decisionTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+                decisionTimeout.CancelAfter(TimeSpan.FromMinutes(2));
+                bool accepted;
+                try { accepted = await decision.Task.WaitAsync(decisionTimeout.Token); }
+                catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+                {
+                    await SaveAsync(message with { State = MessageState.Failed, Error = "等待接收确认超时。" });
+                    throw new IOException("等待接收确认超时。");
+                }
+                var current = _messages!.Messages.FirstOrDefault(entry => entry.Id == file.TransferID && entry.Fingerprint == fingerprint && entry.Direction == TransferDirection.Received) ?? message;
+                if (!accepted) await SaveAsync(current with { State = MessageState.Declined, Error = "已拒绝接收" });
+                else
+                {
+                    if (current.Error != "接收已确认") await SaveAsync(current with { Error = "接收已确认" });
+                    lock (_incomingDecisionGate) _v4IncomingWork[(fingerprint, file.TransferID)] = incomingWork;
+                    incomingWork = null;
+                }
+                return accepted;
+            }
+            catch (OperationCanceledException)
+            {
+                var current = _messages!.Messages.FirstOrDefault(entry => entry.Id == file.TransferID && entry.Fingerprint == fingerprint && entry.Direction == TransferDirection.Received) ?? message;
+                await SaveAsync(current with { State = MessageState.Failed, Error = "连接已断开。" });
+                throw;
+            }
+            catch (Exception ex)
+            {
+                var current = _messages!.Messages.FirstOrDefault(entry => entry.Id == file.TransferID && entry.Fingerprint == fingerprint && entry.Direction == TransferDirection.Received) ?? message;
+                await SaveAsync(current with { State = MessageState.Failed, Error = ErrorText.Describe(ex) });
+                throw;
+            }
+            finally
+            {
+                lock (_incomingDecisionGate) _incomingDecisions.Remove((fingerprint, file.TransferID));
+                incomingWork?.Dispose();
+            }
+        };
+        long lastReceiveUpdate = 0, receiveSampleBytes = 0, receiveSampleAt = Environment.TickCount64;
+        double receiveSpeed = 0;
+        connection.ReceiveProgress = (file, bytes) =>
+        {
+            long now = Environment.TickCount64;
+            long elapsed = now - receiveSampleAt;
+            if (elapsed >= 500)
+            {
+                receiveSpeed = Math.Max(0, bytes - receiveSampleBytes) * 1000.0 / elapsed;
+                receiveSampleBytes = bytes; receiveSampleAt = now;
+            }
+            if (bytes != 0 && bytes != file.Size && now - lastReceiveUpdate < 150) return;
+            lastReceiveUpdate = now;
+            double sampledSpeed = receiveSpeed;
+            Post(() =>
+            {
+                var conversation = FindConversation(fingerprint, connection.PeerName);
+                var item = conversation.Messages.FirstOrDefault(entry => entry.Id == file.TransferID && entry.Entry.Direction == TransferDirection.Received);
+                if (item is null)
+                {
+                    item = new MessageItem(new(file.TransferID, fingerprint, connection.PeerName, TransferDirection.Received,
+                        file.Kind == "image" ? MessageKind.Image : MessageKind.File, MessageState.Sending, DateTimeOffset.Now,
+                        FileName: file.FileName, Size: file.Size));
+                    conversation.Messages.Add(item);
+                }
+                else if (item.Entry.Error == "接收已确认") item.Apply(item.Entry with { Error = "" });
+                item.SetProgress(bytes, sampledSpeed);
+            });
+        };
+        connection.FileReceived = async (file, path) =>
+        {
+            try
+            {
+                await SaveAsync(new(file.TransferID, fingerprint, connection.PeerName, TransferDirection.Received,
+                    file.Kind == "image" ? MessageKind.Image : MessageKind.File, MessageState.Received, DateTimeOffset.Now,
+                    FileName: file.FileName, Path: path, Size: file.Size));
+                await RecordFileAsync(TransferDirection.Received, new(file.FileName, path, file.Size, connection.PeerName, DateTimeOffset.Now));
+            }
+            finally
+            {
+                lock (_incomingDecisionGate)
+                    if (_v4IncomingWork.Remove((fingerprint, file.TransferID), out var incomingWork)) incomingWork.Dispose();
+            }
+        };
+        if (direct) await Task.Run(() => _messages!.SetHidden(fingerprint, false));
+        V4PeerRuntime? supersededRuntime = null;
+        lock (_v4Gate)
+        {
+            var registry = _v4Connections ?? throw new InvalidOperationException("v4 连接注册表尚未准备好。");
+            var result = registry.Register(connection, fingerprint, connection.InitiatorFingerprint, connection.TranscriptDigest, direct);
+            if (result.Disposition == ConnectionRegistrationDisposition.ExistingKept)
+            {
+                connection.Close();
+                return false;
+            }
+            if (result.Superseded is not null && _v4Runtimes.Remove(fingerprint, out var previous)) supersededRuntime = previous;
+            runtime = new V4PeerRuntime(connection, cancellation)
+            {
+                GroupRouter = (Groups ?? throw new InvalidOperationException("群路由服务尚未准备好。")).CreateRouter()
+            };
+            _v4Runtimes[fingerprint] = runtime;
+        }
+        if (supersededRuntime is not null)
+        {
+            try { supersededRuntime.Cancellation.Cancel(); } catch (ObjectDisposedException) { }
+            supersededRuntime.Connection.Close();
+        }
+        try
+        {
+            await OnUiAsync(() =>
+            {
+                if (!_v4Connections!.TryGet(fingerprint, out var active) || !ReferenceEquals(active, connection)) return;
+                if (direct)
+                {
+                    _v4Connection = connection; ActiveFingerprint = fingerprint;
+                    var conversation = FindConversation(fingerprint, connection.PeerName);
+                    conversation.Name = connection.PeerName; conversation.State = "已连接";
+                    Publish("已连接 · " + connection.PeerName);
+                }
+                else
+                {
+                    var conversation = Conversations.FirstOrDefault(item => item.Fingerprint == fingerprint);
+                    if (conversation is not null) conversation.State = "群组已连接";
+                    Publish("群组成员连接已就绪 · " + connection.PeerName);
+                }
+                Changed();
+            });
+            runtime.Runner = Task.Run(() => RunConnectionAsync(connection, fingerprint, cancellation));
+            return true;
+        }
+        catch
+        {
+            _v4Connections?.Remove(fingerprint, connection);
+            lock (_v4Gate)
+                if (_v4Runtimes.TryGetValue(fingerprint, out var active) && ReferenceEquals(active, runtime)) _v4Runtimes.Remove(fingerprint);
+            connection.Close();
+            throw;
+        }
+    }
+
     private async Task RunConnectionAsync(V3Connection connection, string fingerprint, CancellationTokenSource cancellation)
     {
         bool failed = false;
@@ -498,43 +936,141 @@ public sealed class AppSession
         finally
         {
             lock (_incomingDecisionGate)
+                foreach (var pending in _incomingDecisions.Where(kv => kv.Key.Fingerprint == fingerprint).Select(kv => kv.Value))
+                    pending.TrySetCanceled();
+            connection.Close();
+            await FinishConnectionAsync(fingerprint, failed, connection);
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task RunConnectionAsync(V4Connection connection, string fingerprint, CancellationTokenSource cancellation)
+    {
+        bool failed = false;
+        try { await (GetV4Router(connection)?.RunAsync(connection, () => Settings.ReceiveFolder, cancellation.Token)
+            ?? RunV4DirectLoopAsync(connection, cancellation.Token)); }
+        catch (Exception ex)
+        {
+            AppLog.Write($"v4 read loop failed type={ex.GetType().Name}");
+            if (!cancellation.IsCancellationRequested) { failed = true; Fail("连接已中断：" + ErrorText.Describe(ex)); }
+        }
+        finally
+        {
+            lock (_incomingDecisionGate)
             {
                 foreach (var pending in _incomingDecisions.Where(kv => kv.Key.Fingerprint == fingerprint).Select(kv => kv.Value))
                     pending.TrySetCanceled();
+                foreach (var key in _v4IncomingWork.Keys.Where(key => key.Fingerprint == fingerprint).ToArray())
+                    if (_v4IncomingWork.Remove(key, out var incomingWork)) incomingWork.Dispose();
             }
             connection.Close();
+            _v4Connections?.Remove(fingerprint, connection);
+            lock (_v4Gate)
+                if (_v4Runtimes.TryGetValue(fingerprint, out var current) && ReferenceEquals(current.Connection, connection))
+                    _v4Runtimes.Remove(fingerprint);
+            await FinishConnectionAsync(fingerprint, failed, connection);
+            cancellation.Dispose();
+        }
+    }
+
+    private V4GroupConnectionRouter? GetV4Router(V4Connection connection)
+    {
+        lock (_v4Gate)
+            return _v4Runtimes.TryGetValue(ConversationHistory.NormalizeFingerprint(connection.PeerFingerprint), out var runtime) && ReferenceEquals(runtime.Connection, connection)
+                ? runtime.GroupRouter : null;
+    }
+
+    private V4Connection? FirstDirectV4Connection()
+    {
+        var registry = _v4Connections;
+        if (registry is null) return null;
+        foreach (var pair in registry.Snapshot())
+            if (registry.IsDirect(pair.Key)) return pair.Value;
+        return null;
+    }
+
+    private string? FirstDirectV4Fingerprint()
+    {
+        var registry = _v4Connections;
+        if (registry is null) return null;
+        foreach (var pair in registry.Snapshot())
+            if (registry.IsDirect(pair.Key)) return pair.Key;
+        return null;
+    }
+
+    // Group router owns the same connection read loop and preserves direct callbacks installed above.
+    private Task RunV4DirectLoopAsync(V4Connection connection, CancellationToken cancellationToken)
+        => connection.RunAsync(() => Settings.ReceiveFolder, cancellationToken);
+
+    private async Task FinishConnectionAsync(string fingerprint, bool failed, object connection)
+    {
+        bool peerStillConnected = (_connection is not null && !ReferenceEquals(_connection, connection) && SameFingerprint(_connection.PeerFingerprint, fingerprint)) ||
+            (_v4Connections?.TryGet(fingerprint, out var activeV4) == true && !ReferenceEquals(activeV4, connection));
+        if (!peerStillConnected)
+        {
             try
             {
                 var interrupted = await Task.Run(() => _messages!.FailActive(fingerprint, "连接已断开。"));
                 await OnUiAsync(() => { foreach (var message in interrupted) ApplyMessage(message); });
             }
             catch (Exception ex) { AppLog.Write($"history: fail active {ex.GetType().Name}"); }
-            await OnUiAsync(() =>
-            {
-                var conversation = Conversations.FirstOrDefault(c => c.Fingerprint == fingerprint);
-                if (conversation is not null)
-                {
-                    conversation.State = "未连接";
-                    foreach (var item in conversation.Messages.Where(m => m.Entry.IsActive)) item.Apply(item.Entry with { State = MessageState.Failed, Error = "连接已断开。" });
-                }
-                if (ReferenceEquals(_connection, connection))
-                {
-                    _connection = null; _connectionCts = null; ActiveFingerprint = null;
-                    Interlocked.Exchange(ref _connectionSlot, 0);
-                    if (!failed) Publish("已断开连接");
-                    Changed();
-                }
-            });
-            cancellation.Dispose();
         }
+        await OnUiAsync(() =>
+        {
+            var conversation = Conversations.FirstOrDefault(c => c.Fingerprint == fingerprint);
+            if (conversation is not null && !peerStillConnected)
+            {
+                conversation.State = "未连接";
+                foreach (var item in conversation.Messages.Where(m => m.Entry.IsActive)) item.Apply(item.Entry with { State = MessageState.Failed, Error = "连接已断开。" });
+            }
+            if (ReferenceEquals(_connection, connection))
+            {
+                _connection = null; _connectionCts = null; ActiveFingerprint = FirstDirectV4Fingerprint();
+                Interlocked.Exchange(ref _connectionSlot, 0);
+                if (!failed) Publish("已断开连接");
+                Changed();
+            }
+            else if (connection is V4Connection v4)
+            {
+                if (ReferenceEquals(_v4Connection, v4)) _v4Connection = FirstDirectV4Connection();
+                if (ActiveFingerprint == fingerprint) ActiveFingerprint = _connection?.PeerFingerprint ?? FirstDirectV4Fingerprint();
+                if (!failed) Publish("已断开连接");
+                Changed();
+            }
+        });
     }
 
-    public async Task DisconnectAsync()
+    public async Task DisconnectAsync(ConversationItem? conversation = null)
     {
-        try { _connectionCts?.Cancel(); } catch (ObjectDisposedException) { }
-        _connection?.Close();
-        var runner = _runner;
-        if (runner is not null) await runner;
+        string? fingerprint = conversation is null ? null : ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        var runners = new List<Task>();
+        if (fingerprint is null || (_connection is not null && SameFingerprint(_connection.PeerFingerprint, fingerprint)) ||
+            (_connectionSlot != 0 && _connection is null && _v4PendingByPeer.IsEmpty))
+        {
+            try { _connectionCts?.Cancel(); } catch (ObjectDisposedException) { }
+            _connection?.Close();
+            if (_runner is not null) runners.Add(_runner);
+        }
+        if (fingerprint is null)
+        {
+            foreach (var pending in _v4Pending.Values)
+                try { pending.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        else if (_v4PendingByPeer.TryGetValue(fingerprint, out var pending))
+        {
+            try { pending.Cancel(); } catch (ObjectDisposedException) { }
+        }
+
+        V4PeerRuntime[] runtimes;
+        lock (_v4Gate)
+            runtimes = _v4Runtimes.Values.Where(runtime => fingerprint is null || SameFingerprint(runtime.Connection.PeerFingerprint, fingerprint)).ToArray();
+        foreach (var runtime in runtimes)
+        {
+            try { runtime.Cancellation.Cancel(); } catch (ObjectDisposedException) { }
+            runtime.Connection.Close();
+            if (runtime.Runner is not null) runners.Add(runtime.Runner);
+        }
+        if (runners.Count > 0) await Task.WhenAll(runners);
     }
 
     public bool DecideIncomingFile(ConversationItem conversation, MessageItem item, bool accept)
@@ -557,38 +1093,52 @@ public sealed class AppSession
         return true;
     }
 
-    private V3Connection RequireConnection(ConversationItem conversation)
+    private (V3Connection? V3, V4Connection? V4) RequireConnection(ConversationItem conversation)
     {
-        if (!CanSend(conversation)) throw new InvalidOperationException("请先连接当前设备；查看历史不会切换活动连接。");
-        return _connection!;
+        if (IsInstallingUpdate || conversation is null) throw new InvalidOperationException("请先连接当前设备；查看历史不会切换活动连接。");
+        string fingerprint = ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        if (_connection is not null && SameFingerprint(_connection.PeerFingerprint, fingerprint)) return (_connection, null);
+        if (_v4Connections?.TryGet(fingerprint, out var v4) == true && v4 is not null) return (null, v4);
+        throw new InvalidOperationException("请先连接当前设备；查看历史不会切换活动连接。");
     }
+
+    private bool IsCurrent((V3Connection? V3, V4Connection? V4) connection)
+        => connection.V3 is not null ? ReferenceEquals(_connection, connection.V3) :
+            connection.V4 is not null && _v4Connections?.TryGet(connection.V4.PeerFingerprint, out var active) == true && ReferenceEquals(active, connection.V4);
 
     public async Task SendTextAsync(ConversationItem conversation, string text, MessageItem? retry = null)
     {
         using var work = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后发送。");
         var connection = RequireConnection(conversation);
+        string peerName = connection.V3?.PeerName ?? connection.V4!.PeerName;
         if (retry is not null && (retry.Entry.Fingerprint != conversation.Fingerprint || retry.Entry.Direction != TransferDirection.Sent || retry.Entry.Kind != MessageKind.Text))
             throw new InvalidOperationException("这条消息属于其他会话。");
         var id = retry?.Id ?? Guid.NewGuid(); new V3Text(id, text).Validate();
-        if (Interlocked.CompareExchange(ref _sendingText, 1, 0) != 0) throw new InvalidOperationException("上一条文字仍在等待回执。");
+        string sendFingerprint = ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        if (!_sendingTextPeers.TryAdd(sendFingerprint, 0)) throw new InvalidOperationException("上一条文字仍在等待回执。");
+        Interlocked.Increment(ref _sendingText);
         Changed();
-        var message = new ConversationMessage(id, conversation.Fingerprint, connection.PeerName, TransferDirection.Sent, MessageKind.Text,
+        var message = new ConversationMessage(id, conversation.Fingerprint, peerName, TransferDirection.Sent, MessageKind.Text,
             MessageState.Sending, retry?.Entry.At ?? DateTimeOffset.Now, Text: text);
         try
         {
             await SaveAsync(message);
-            await connection.SendTextAsync(text, id, _lifetime.Token);
+            if (connection.V3 is not null) await connection.V3.SendTextAsync(text, id, _lifetime.Token);
+            else await connection.V4!.SendTextAsync(text, id, _lifetime.Token);
             await SaveAsync(message with { State = MessageState.Delivered });
         }
         catch (Exception ex) { await MarkFailedAsync(message, ex); throw; }
-        finally { Interlocked.Exchange(ref _sendingText, 0); Changed(); }
+        finally { _sendingTextPeers.TryRemove(sendFingerprint, out _); Interlocked.Decrement(ref _sendingText); Changed(); }
     }
 
     public async Task SendFilesAsync(ConversationItem conversation, IReadOnlyList<string> paths, bool images = false)
     {
         using var work = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后发送。");
         var connection = RequireConnection(conversation);
-        if (Interlocked.CompareExchange(ref _sendingFiles, 1, 0) != 0) throw new InvalidOperationException("请等当前这批附件发送完成。");
+        string peerName = connection.V3?.PeerName ?? connection.V4!.PeerName;
+        string sendFingerprint = ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        if (!_sendingFilePeers.TryAdd(sendFingerprint, 0)) throw new InvalidOperationException("请等当前这批附件发送完成。");
+        Interlocked.Increment(ref _sendingFiles);
         Changed();
         var queued = new List<ConversationMessage>();
         try
@@ -596,7 +1146,7 @@ public sealed class AppSession
             foreach (string path in paths)
             {
                 var info = new FileInfo(path);
-                var message = new ConversationMessage(Guid.NewGuid(), conversation.Fingerprint, connection.PeerName, TransferDirection.Sent,
+                var message = new ConversationMessage(Guid.NewGuid(), conversation.Fingerprint, peerName, TransferDirection.Sent,
                     images || IsImage(path) ? MessageKind.Image : MessageKind.File, MessageState.Queued, DateTimeOffset.Now,
                     FileName: info.Name, Path: path, Size: info.Length);
                 await SaveAsync(message); queued.Add(message);
@@ -605,31 +1155,34 @@ public sealed class AppSession
             {
                 try
                 {
-                    if (!ReferenceEquals(_connection, connection)) throw new IOException("连接已断开，请重新连接后重试。");
+                    if (!IsCurrent(connection)) throw new IOException("连接已断开，请重新连接后重试。");
                     await SaveAsync(message with { State = MessageState.Sending, Error = "等待对方确认接收" });
                     long lastUpdate = 0, sampleBytes = 0;
                     long sampleAt = Environment.TickCount64;
                     double sendSpeed = 0;
-                    var sent = await connection.SendFileAsync(message.Path, message.Kind == MessageKind.Image ? "image" : "file", message.Id,
-                        (bytes, total) =>
+                    Action<long, long> reportProgress = (bytes, total) =>
+                    {
+                        long now = Environment.TickCount64;
+                        long elapsed = now - sampleAt;
+                        if (elapsed >= 500)
                         {
-                            long now = Environment.TickCount64;
-                            long elapsed = now - sampleAt;
-                            if (elapsed >= 500)
-                            {
-                                sendSpeed = Math.Max(0, bytes - sampleBytes) * 1000.0 / elapsed;
-                                sampleBytes = bytes;
-                                sampleAt = now;
-                            }
-                            if (bytes != total && now - lastUpdate < 150) return;
-                            lastUpdate = now;
-                            double sampledSpeed = sendSpeed;
-                            Post(() => conversation.Messages.FirstOrDefault(m => m.Id == message.Id && m.Entry.Direction == TransferDirection.Sent)?.SetProgress(bytes, sampledSpeed));
-                            Post(() => ProgressChanged?.Invoke(this, new(message.FileName, bytes, total, "正在发送…")));
-                        }, _lifetime.Token);
+                            sendSpeed = Math.Max(0, bytes - sampleBytes) * 1000.0 / elapsed;
+                            sampleBytes = bytes;
+                            sampleAt = now;
+                        }
+                        if (bytes != total && now - lastUpdate < 150) return;
+                        lastUpdate = now;
+                        double sampledSpeed = sendSpeed;
+                        Post(() => conversation.Messages.FirstOrDefault(m => m.Id == message.Id && m.Entry.Direction == TransferDirection.Sent)?.SetProgress(bytes, sampledSpeed));
+                        Post(() => ProgressChanged?.Invoke(this, new(message.FileName, bytes, total, "正在发送…")));
+                    };
+                    Task<V3File> sendTask = connection.V3 is not null
+                        ? connection.V3.SendFileAsync(message.Path, message.Kind == MessageKind.Image ? "image" : "file", message.Id, reportProgress, _lifetime.Token)
+                        : connection.V4!.SendFileAsync(message.Path, message.Kind == MessageKind.Image ? "image" : "file", message.Id, reportProgress, _lifetime.Token);
+                    var sent = await sendTask;
                     var currentMessage = _messages!.Messages.FirstOrDefault(m => m.Id == message.Id && m.Fingerprint == message.Fingerprint && m.Direction == TransferDirection.Sent) ?? message;
                     await SaveAsync(currentMessage with { State = MessageState.Delivered, Error = "", Size = sent.Size });
-                    await RecordFileAsync(TransferDirection.Sent, new(message.FileName, message.Path, sent.Size, connection.PeerName, DateTimeOffset.Now));
+                    await RecordFileAsync(TransferDirection.Sent, new(message.FileName, message.Path, sent.Size, peerName, DateTimeOffset.Now));
                 }
                 catch (Exception ex)
                 {
@@ -650,7 +1203,7 @@ public sealed class AppSession
             }
             throw;
         }
-        finally { Interlocked.Exchange(ref _sendingFiles, 0); Changed(); }
+        finally { _sendingFilePeers.TryRemove(sendFingerprint, out _); Interlocked.Decrement(ref _sendingFiles); Changed(); }
     }
 
     public static bool IsImage(string path) => new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
@@ -722,8 +1275,27 @@ public sealed class AppSession
         });
         Notifier.Current.Show(direction == TransferDirection.Sent ? $"已发送 {item.Name}" : $"收到 {item.Name}", item.From);
     }
+
+    private void OnGroupEventReceived(object? sender, GroupEvent groupEvent)
+    {
+        if (groupEvent.Kind != "file" || groupEvent.FilePath is null ||
+            groupEvent.Message?.FileMetadata is not { } file) return;
+
+        string from = Groups?.Store.GetGroup(groupEvent.GroupID)?.Members
+            .FirstOrDefault(member => SameFingerprint(member.Fingerprint, groupEvent.PeerFingerprint))?.DisplayName
+            ?? groupEvent.PeerFingerprint;
+        _ = RecordGroupFileAsync(new ReceivedItem(file.FileName, groupEvent.FilePath,
+            checked((long)file.Size), from, DateTimeOffset.Now));
+    }
+
+    private async Task RecordGroupFileAsync(ReceivedItem item)
+    {
+        try { await RecordFileAsync(TransferDirection.Received, item); }
+        catch (Exception ex) { AppLog.Write("group file history: " + ex.GetType().Name); }
+    }
+
     public bool IsConversationHidden(ConversationItem conversation) => _messages?.IsHidden(conversation.Fingerprint) == true;
-    public bool CanDeleteConversation(ConversationItem conversation) => _messages is not null && ActiveFingerprint != conversation.Fingerprint && !conversation.Messages.Any(m => m.Entry.IsActive);
+    public bool CanDeleteConversation(ConversationItem conversation) => _messages is not null && !IsConnected(conversation) && !conversation.Messages.Any(m => m.Entry.IsActive);
 
     public async Task SetConversationHiddenAsync(ConversationItem conversation, bool hidden)
     {
@@ -750,7 +1322,7 @@ public sealed class AppSession
             var current = Conversations.FirstOrDefault(c => c.Fingerprint == conversation.Fingerprint);
             if (current is not null)
             {
-                if (retained.Length == 0 && ActiveFingerprint != conversation.Fingerprint)
+                if (retained.Length == 0 && !IsConnected(conversation))
                 {
                     // Remove the row before changing its summary, so deletion never briefly reorders it.
                     Conversations.Remove(current); current.Messages.Clear(); current.Draft = "";
@@ -792,7 +1364,7 @@ public sealed class AppSession
         try
         {
             await StopNetworkAsync();
-            Identity?.Dispose(); Identity = null; Listener = null; Discovery = null;
+            Identity?.Dispose(); Identity = null; Listener = null; V4Listener = null; Discovery = null;
         }
         finally { _startup.Release(); }
     }
@@ -810,6 +1382,7 @@ public sealed class AppSession
         catch { CancelUpdatePreparation(); throw; }
     }
     public void CancelUpdatePreparation() { _updateWork.CancelInstall(); Changed(); }
+    public Task InvokeOnUiAsync(Action action) => OnUiAsync(action);
     private void Changed() => Post(() => StateChanged?.Invoke(this, EventArgs.Empty));
     private void Publish(string status) => Post(() => { Status = status; StatusChanged?.Invoke(this, status); });
     private void Fail(string message) { Publish(message); Post(() => Failed?.Invoke(this, message)); }

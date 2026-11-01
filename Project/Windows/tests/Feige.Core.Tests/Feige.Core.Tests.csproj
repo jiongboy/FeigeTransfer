@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -20,6 +20,9 @@
 
   <ItemGroup>
     <None Update="Fixtures/v3.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\Docs\Public\TestVectors\v4.json" Link="Fixtures\v4.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\Docs\Public\TestVectors\v4-handshake.json" Link="Fixtures\v4-handshake.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\Docs\Public\TestVectors\v5-handshake.json" Link="Fixtures\v5-handshake.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

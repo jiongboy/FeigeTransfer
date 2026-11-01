@@ -317,6 +317,9 @@ public sealed partial class MainWindow : Window
                 case "receive":
                     NavFrame.Navigate(typeof(ReceivePage));
                     break;
+                case "groups":
+                    NavFrame.Navigate(typeof(GroupsPage));
+                    break;
                 default:
                     throw new InvalidOperationException($"Unknown navigation item tag: {item.Tag}");
             }
