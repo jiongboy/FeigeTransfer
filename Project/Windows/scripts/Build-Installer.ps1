@@ -118,10 +118,10 @@ try {
     # Call MSBuild directly: the CLI wrapper ignores the target-level publish properties this
     # build depends on, and it can report success while copying into a different folder than
     # -o asks for. The explicit target plus PublishDir, and the checks below, make a silent
-    # empty payload impossible. `dotnet msbuild` also skips the implicit restore that
-    # `dotnet publish` performs, so restore first or a clean clone fails with NETSDK1004.
-    & $DotnetPath restore $project -nodeReuse:false -v:minimal
-    if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed: $LASTEXITCODE" }
+    # empty payload impossible. `dotnet msbuild` skips implicit restore, so restore the exact
+    # target RID first; otherwise assets may omit win-arm64 or another requested runtime.
+    & $DotnetPath restore $project -r $rid "-p:Platform=$platformName" -nodeReuse:false -v:minimal
+    if ($LASTEXITCODE -ne 0) { throw "dotnet restore for $rid failed: $LASTEXITCODE" }
     & $DotnetPath msbuild $project -t:Publish "-p:PublishDir=$payload" `
         '-p:Configuration=Release' "-p:RuntimeIdentifier=$rid" '-p:SelfContained=true' `
         "-p:Platform=$platformName" '-p:FeigeInstallerBuild=true' '-p:PublishReadyToRun=false' `

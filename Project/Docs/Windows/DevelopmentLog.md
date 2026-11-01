@@ -15,6 +15,13 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-01 Windows b1302 验签兼容、ARM64 RID restore 修复与交付
+
+- **定位**：b1301 原 EXE 大小为 67,889,440 字节，SHA-256 与 sidecar 一致，签名者匹配当前 `UpdateSource.json` pin；发布记录记载了安装及应用内更新到 b1301。当前 ROG 对 b1301 和新签名 DLL 均返回 `UnknownError` / `TRUST_E_BASIC_CONSTRAINTS`。这反映当前主机的 Authenticode 评估状态，不是旧包文件不完整的证据；本轮没有轮换证书。
+- **验签修复**：`VerifyPinnedAuthenticode.ps1` 保留 pin、证书有效期、自签 CA、Code Signing EKU、RSA-3072 检查，并要求 KeyUsage 包含 `DigitalSignature`。仍接受仅有 `UntrustedRoot` 的既有路径；新增仅在固定证书匹配、X509 chain 构建成功且无其他链错误时接受准确的 BasicConstraints `UnknownError` 诊断。其他未知错误、链错误、错误 pin 与文件篡改仍拒绝；测试脚本覆盖策略正负例。
+- **ARM64 restore**：`Build-Installer.ps1` 在 MSBuild Publish 前按目标 RuntimeIdentifier 和 Platform 执行 restore，避免 assets 缺少 `win-arm64`。
+- **构建与交付**：ROG pinned-authenticode 测试通过；实际暂存签名 DLL 为 `UnknownError`、chain 成功且无链错误、pin 匹配，新策略验证通过。`win-x64` 与 `win-arm64` restore 均生成对应 assets；ARM64 临时 publish 为自包含输出，且包含与修改后源码哈希一致的验签脚本。用户审阅确认后生成 `1.2.1` build `1302`：x64 67,917,032 字节，SHA-256 `378CC0AB49AAD871120AAAD3FC7658E8B0434D01149BA4F4748D20871C7DA130`；ARM64 65,265,944 字节，SHA-256 `8CEC64F6752DC0C272FCCA79FD5EA5965DCB73A10CB75BA769D57E008A698C60`。ROG pinned verifier 与两个 sidecar 均通过；分块传输及本地整包哈希复核一致。CurrentUser/LocalMachine Root 中的 pin 匹配项测试前后均为 1；未修改 Root 信任项或发布更新源。产物保存在 `Release/Windows/1.2.1/`。
+
 ## 2026-11-01 当前源码 x64 Release 编译与回归
 
 - **环境与隔离**：Parallels Windows 11 ARM64 / .NET SDK 10.0.402。通过来宾共享目录将当前 `Project/Windows/` 源码暂存到唯一临时目录 `C:\Windows\Temp\FeigeReleaseX64Check-20261101-C4A7D291`；排除 `bin/obj/dist/.git/TestResults` 和既有验收临时目录，公共协议测试向量单独复制。未使用 ROG，也未安装或启动应用。

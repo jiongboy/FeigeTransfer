@@ -1,6 +1,38 @@
 $ErrorActionPreference = 'Stop'
 $source = Join-Path $PSScriptRoot '..\src\Feige.App\Updates\VerifyPinnedAuthenticode.ps1'
 . ([IO.Path]::GetFullPath($source))
+
+$untrustedRoot = [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::UntrustedRoot
+$revoked = [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::Revoked
+Test-FeigePinnedAuthenticodeChainStatus -Status 'Valid' -StatusMessage 'Signature verified.' -ChainOk $true -ChainErrors @() | Out-Null
+Test-FeigePinnedAuthenticodeChainStatus -Status 'NotTrusted' -StatusMessage 'Untrusted root.' -ChainOk $false -ChainErrors @($untrustedRoot) | Out-Null
+Test-FeigePinnedAuthenticodeChainStatus -Status 'UnknownError' `
+    -StatusMessage "A certificate's basic constraint extension has not been observed" -ChainOk $true -ChainErrors @() | Out-Null
+function Assert-FeigeStatusRejected {
+    param(
+        [Parameter(Mandatory)][string]$Scenario,
+        [Parameter(Mandatory)][string]$Status,
+        [Parameter(Mandatory)][string]$StatusMessage,
+        [Parameter(Mandatory)][bool]$ChainOk,
+        [Security.Cryptography.X509Certificates.X509ChainStatusFlags[]]$ChainErrors = @()
+    )
+    $rejected = $false
+    try {
+        Test-FeigePinnedAuthenticodeChainStatus -Status $Status -StatusMessage $StatusMessage `
+            -ChainOk $ChainOk -ChainErrors $ChainErrors | Out-Null
+    } catch { $rejected = $true }
+    if (!$rejected) { throw "Unsafe status scenario was accepted: $Scenario" }
+}
+Assert-FeigeStatusRejected -Scenario 'unrecognized UnknownError' -Status 'UnknownError' `
+    -StatusMessage 'A different Windows trust error' -ChainOk $true -ChainErrors @()
+Assert-FeigeStatusRejected -Scenario 'BasicConstraints with a revoked chain' -Status 'UnknownError' `
+    -StatusMessage "A certificate's basic constraint extension has not been observed" `
+    -ChainOk $true -ChainErrors @($revoked)
+Assert-FeigeStatusRejected -Scenario 'NotTrusted with no chain error' -Status 'NotTrusted' `
+    -StatusMessage 'Untrusted root.' -ChainOk $true -ChainErrors @()
+Assert-FeigeStatusRejected -Scenario 'Valid with an untrusted chain' -Status 'Valid' `
+    -StatusMessage 'Signature verified.' -ChainOk $false -ChainErrors @($untrustedRoot)
+
 $fixture = Join-Path $env:TEMP ('feige-pin-test-' + [Guid]::NewGuid().ToString('N') + '.ps1')
 $certificate = $null
 try {
