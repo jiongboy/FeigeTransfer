@@ -20,13 +20,13 @@ macOS 0.3.3 与当前 Windows 源码均使用 v3，旧 Windows v1 安装包不�
 
 用户已反馈 Windows↔Mac 基本互通。1.2.0 汇总三栏界面、附件预览、会话管理、两页引导与网络韧性优化，Windows 11 ARM64 的原生窗口专项检查见开发日志。x64 / ARM64 自包含 EXE 交付与验证范围见 [1.2.0 交付说明](ReleaseNotes-1.2.0.md)。截至 2026-11-01，Parallels Windows 11 ARM64 已完成 Mac 群主邀请 Windows 接受、Windows 群主创建群组并添加/移除成员，以及混合拓扑下的 20 人群组广播验收（1 个 Windows owner 加同一 Mac 宿主上的 19 个隔离 macOS `TransferModel` runtime，不是 20 台实体设备）。跨端流程仍是部分验收：完整 Windows↔macOS 文件/消息与拒绝、断线恢复矩阵，Mac↔Mac、Windows↔Windows 真机矩阵，以及中文输入法/拖放、访客网络、多网卡、Intel/AMD 和当前正式包验收仍待完成。
 
-交付后源码新增文件/图片接收确认、设备名称同步、刷新状态反馈、安装签名检查及 Mac mini LAN 更新源改造。截至 2026-11-02，Windows 11 ARM64 / .NET 10.0.402 来宾机的隔离当前源码副本，以及 ROG x64 / .NET SDK 10.0.402 对 commit `ac9a3d8` 的隔离副本，曾分别通过 Core **578/578**、App **8/8**；这是本次更新配置解析修复前的全量基线。此次修复后，ROG Windows x64 上更新相关 Core 用例 **62/62** 通过；当前 Core 全量 **581/581** 在 macOS .NET 11 RC（`DOTNET_ROLL_FORWARD=Major`）通过。当前源码 `Feige.App` x64 Release **非打包编译**、`Feige.UpdateTool` Release 与 `UpdateProbe` Release 均通过，0 警告、0 错误；测试未安装或启动应用。Windows .NET 10 UpdateTool 验证了 Mac mini LAN 签名清单与来源 URL，内容为 1.2.1 build 1301；ROG 请求 GitHub latest-release 清单返回 HTTP 404。未下载安装包、未验证安装包 Authenticode，客户端更新下载与安装闭环仍待完成。GitHub `v1.2.1` Release 已有安装包和校验文件，但尚无签名更新清单；验收边界见 [文件接收确认](FileReceiveApproval.md)、[更新接入](UpdateService.md)和[1.2.0 交付说明](ReleaseNotes-1.2.0.md)。
+交付后源码新增文件/图片接收确认、设备名称同步、刷新状态反馈、安装签名检查及 Mac mini LAN 更新源改造。截至 2026-11-02，Windows 11 ARM64 / .NET 10.0.402 来宾机的隔离当前源码副本，以及 ROG x64 / .NET SDK 10.0.402 对 commit `ac9a3d8` 的隔离副本，曾分别通过 Core **578/578**、App **8/8**；这是本次更新配置解析修复前的全量基线。此次修复后，ROG Windows x64 更新相关 Core 用例 **62/62**、`Feige.App.Tests` **8/8** 通过；App.Tests 使用隔离数据目录，未启用 UI profile provisioning。当前 Core 全量 **581/581** 在 macOS .NET 11 RC（`DOTNET_ROLL_FORWARD=Major`）通过。当前源码 `Feige.App` x64 Release 非打包编译、`Feige.App.Tests` x64 Release 编译、`Feige.UpdateTool` Release 与 `UpdateProbe` Release 均通过，0 警告、0 错误；测试未安装或启动桌面 UI。Windows .NET 10 UpdateTool 验证了 Mac mini LAN 签名清单与来源 URL，内容为 1.2.1 build 1301；ROG 请求 GitHub latest-release 清单返回 HTTP 404。未下载安装包、未验证安装包 Authenticode，客户端更新下载与安装闭环仍待完成。GitHub `v1.2.1` Release 已有安装包和校验文件，但尚无签名更新清单；验收边界见 [文件接收确认](FileReceiveApproval.md)、[更新接入](UpdateService.md)和[1.2.0 交付说明](ReleaseNotes-1.2.0.md)。
 
 开发环境已在 Windows 11 25H2 就绪，搭建步骤与版本基线见 [`Windows环境搭建.md`](EnvironmentSetup.md)。后续 Windows UI/协议修改优先在 Parallels Windows 环境构建验证；文件接收确认设计与验收矩阵见 [`Windows文件接收确认.md`](FileReceiveApproval.md)。
 
 ## 开发顺序
 
-1. 当前源码 Windows App x64 Release 非打包编译通过（0 警告、0 错误）；ROG x64 / .NET 10 更新相关 Core 用例 62/62 通过，当前 Core 全量 581/581 在 macOS .NET 11 RC major roll-forward 下通过。此前 Core 578/578、App 8/8 是本次更新配置解析修复前的 Windows 全量基线。仍需完成签名发行包、干净安装/升级/卸载、GitHub 签名清单发布与客户端端到端更新验收；GitHub latest 清单目前返回 HTTP 404，详见 [Windows 更新接入文档](UpdateService.md)。
+1. 当前源码 Windows App x64 Release 非打包编译通过（0 警告、0 错误）；ROG x64 / .NET 10 更新相关 Core 用例 62/62、`Feige.App.Tests` 8/8 通过，当前 Core 全量 581/581 在 macOS .NET 11 RC major roll-forward 下通过。此前 Core 578/578、App 8/8 是本次更新配置解析修复前的 Windows 全量基线。仍需完成签名发行包、干净安装/升级/卸载、GitHub 签名清单发布与客户端端到端更新验收；GitHub latest 清单目前返回 HTTP 404，详见 [Windows 更新接入文档](UpdateService.md)。
 2. 已接入 v3 会话界面和一次连接同意，继续验收文字送达/失败/重试、设备隔离、双向附件、图片缩略图与文件移走场景。
 3. 已实现身份签名预检、名称/目录持久化顺序、单实例和关闭后重开代码；继续验证中文输入法、主题、高 DPI、窗口重开和退出清理。
 4. 验证 Windows↔Windows、Windows↔macOS 的文字、图片、空文件和大文件，以及拒绝、断线、取消、重名与磁盘不足。
@@ -41,5 +41,5 @@ macOS 0.3.3 与当前 Windows 源码均使用 v3，旧 Windows v1 安装包不�
 
 ## 安全边界
 
-旧 v1 安装包与 macOS 当前 v3 格式不兼容；当前源码 v3 已通过 Windows App x64 Release 非打包编译（0 警告、0 错误），ROG x64 / .NET 10 更新相关 Core 用例 62/62 通过，当前 Core 全量 581/581 在 macOS .NET 11 RC major roll-forward 下通过；Core/App 578/578、8/8 是本次解析修复前的 Windows 全量基线。ROG x64 回归使用隔离源码副本，未安装或启动应用；LAN 签名清单已验证，GitHub latest 清单仍为 404，未下载或安装更新包。用户已确认 Windows↔Mac 基本互通，完整运行验收尚未完成。新版发布前仍需正式签名发行包、双机（Windows↔Windows、Windows↔macOS）完整互通验收，以及防火墙/访客网络/多网卡场景测试。
+旧 v1 安装包与 macOS 当前 v3 格式不兼容；当前源码 v3 已通过 Windows App x64 Release 非打包编译（0 警告、0 错误），ROG x64 / .NET 10 更新相关 Core 用例 62/62、`Feige.App.Tests` 8/8 通过，当前 Core 全量 581/581 在 macOS .NET 11 RC major roll-forward 下通过；Core/App 578/578、8/8 是本次解析修复前的 Windows 全量基线。ROG x64 回归使用隔离源码副本，未安装或启动应用；LAN 签名清单已验证，GitHub latest 清单仍为 404，未下载或安装更新包。用户已确认 Windows↔Mac 基本互通，完整运行验收尚未完成。新版发布前仍需正式签名发行包、双机（Windows↔Windows、Windows↔macOS）完整互通验收，以及防火墙/访客网络/多网卡场景测试。
 早期 Python HTTP 原型不得作为 Windows 或任何正式发布的后端服务。

@@ -2,7 +2,7 @@
 
 ## 当前状态（2026-11-02）
 
-Windows 11 ARM64 与 ROG x64 / .NET 10 上的 Core 578/578、App 8/8 是本次更新配置解析修复前的全量基线；ROG x64 基线来自 commit `ac9a3d8` 的隔离副本。修复后，ROG x64 更新相关 Core 用例 62/62 通过，当前 Core 全量 581/581 在 macOS .NET 11 RC major roll-forward 下通过。当前源码 `Feige.App` x64 Release 非打包编译、`Feige.UpdateTool` 与 `UpdateProbe` Release 编译均 0 警告、0 错误；旧版测试中的 nullable 警告已随解析回归测试替换消失。没有在 ROG 安装或启动应用，也没有下载更新包。Windows .NET 10 UpdateTool 已验证 Mac mini LAN 清单签名与来源 URL，清单记录 1.2.1 build 1301；GitHub latest-release 清单返回 HTTP 404，因此客户端包下载、Authenticode 验证与安装交接仍待完成。Parallels 实际 UI/LAN 已覆盖 Mac 群主邀请 Windows、Windows 群主建群及成员增删，以及 1 个 Windows owner + 同一 Mac 宿主 19 个隔离 `TransferModel` runtime 的 20 人群组广播；不代表 20 台实体设备，也不替代完整跨平台矩阵。正式签名发行包安装/升级/卸载和完整网络边界验收仍待完成，详见[更新接入文档](UpdateService.md)。
+Windows 11 ARM64 与 ROG x64 / .NET 10 上的 Core 578/578、App 8/8 是本次更新配置解析修复前的全量基线；ROG x64 基线来自 commit `ac9a3d8` 的隔离副本。修复后，ROG x64 更新相关 Core 用例 62/62、`Feige.App.Tests` 8/8 均通过；App.Tests 用时 47 秒，使用 `FeigeTestIsolation=true` 和隔离数据目录，未启用 UI profile provisioning。当前 Core 全量 581/581 在 macOS .NET 11 RC major roll-forward 下通过。当前源码 `Feige.App` x64 Release 非打包编译、`Feige.App.Tests` x64 Release 编译、`Feige.UpdateTool` 与 `UpdateProbe` Release 编译均 0 警告、0 错误；旧版测试中的 nullable 警告已随解析回归测试替换消失。没有在 ROG 安装或启动桌面 UI，也没有下载更新包。Windows .NET 10 UpdateTool 已验证 Mac mini LAN 清单签名与来源 URL，清单记录 1.2.1 build 1301；GitHub latest-release 清单返回 HTTP 404，因此客户端包下载、Authenticode 验证与安装交接仍待完成。Parallels 实际 UI/LAN 已覆盖 Mac 群主邀请 Windows、Windows 群主建群及成员增删，以及 1 个 Windows owner + 同一 Mac 宿主 19 个隔离 `TransferModel` runtime 的 20 人群组广播；不代表 20 台实体设备，也不替代完整跨平台矩阵。正式签名发行包安装/升级/卸载和完整网络边界验收仍待完成，详见[更新接入文档](UpdateService.md)。
 
 本手册按时间倒序保留实现记录，下面各节的“未打包 / 测试数 / 构建结果”均指条目发生时，不代表当前状态。
 

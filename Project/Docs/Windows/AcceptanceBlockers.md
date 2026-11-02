@@ -18,6 +18,7 @@
 | 39 条连接容量回归 | 认证 loopback TCP 测试通过；这不是实体 20-peer LAN 测试 |
 | LAN20 验收后的 Windows 恢复 | LocalState 逐文件与 manifest 一致；原 TCP/UDP 防火墙规则恢复，临时规则和本轮临时数据清理 |
 | Windows 更新配置兼容回归 | ROG x64 / .NET 10 更新相关 Core 用例 62/62；当前 Core 全量 581/581（macOS .NET 11 RC major roll-forward）；App 非打包 Release、UpdateTool 与 UpdateProbe Release 编译均 0 警告、0 错误 |
+| Windows App x64 集成回归（解析修复后） | ROG x64 / .NET 10 `Feige.App.Tests` 8/8 通过；`FeigeTestIsolation=true`，未启用 UI profile provisioning |
 | Windows 更新签名清单 | Windows .NET 10 UpdateTool 验证 LAN 清单签名和来源 URL，记录 1.2.1 build 1301；ROG 请求 GitHub latest 清单返回 HTTP 404 |
 
 真实跨端（Mac ↔ Parallels Windows）已完成部分 v5 握手、群组邀请与成员状态路径；这不等于完整跨平台文件传输与异常场景矩阵。
