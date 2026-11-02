@@ -133,18 +133,5 @@ static RSA OpenPkcs8Key(string path)
 static IReadOnlyList<UpdateSource> ReadSources(string path)
 {
     // File.ReadAllText handles a UTF-8 BOM written by Windows PowerShell.
-    string json = File.ReadAllText(path);
-    try
-    {
-        var sources = JsonSerializer.Deserialize<UpdateSources>(json, UpdateManifest.Json) ?? throw new InvalidDataException("更新来源为空。");
-        sources.Validate();
-        return sources.Resolve();
-    }
-    catch (JsonException)
-    {
-        // Fall back to a legacy single-origin file.
-        var source = JsonSerializer.Deserialize<UpdateSource>(json, UpdateManifest.Json) ?? throw new InvalidDataException("更新来源为空。");
-        source.Validate();
-        return [source.Normalize()];
-    }
+    return UpdateSources.Parse(File.ReadAllText(path)).Resolve();
 }

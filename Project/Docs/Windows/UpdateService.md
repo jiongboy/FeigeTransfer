@@ -16,6 +16,8 @@
 
 两个来源都使用同一套清单协议：客户端从 `<baseUri>/windows/<channel>/feige-windows-update.json` 读取签名清单，版本包位于 `<baseUri>/windows/<channel>/versions/<tag>/<file>.exe`，说明位于 `<baseUri>/windows/<channel>/versions/<tag>/notes`。局域网 stable URL 是 `http://192.168.50.229:8080/updates/windows/stable/...`；GitHub 来源的 base 是 `https://github.com/jiongboy/FeigeTransfer/releases/latest/download`，因此清单地址为 `.../latest/download/windows/stable/feige-windows-update.json`，需作为 Release 资产上传。
 
+截至 2026-11-02，Mac mini LAN 清单端点返回 HTTP 200；Windows .NET 10 `Feige.UpdateTool verify` 已验证清单签名与来源 URL，清单记录 1.2.1 build 1301。此验证没有下载或校验安装包。ROG 对 GitHub latest-release 清单地址的请求返回 HTTP 404。
+
 LAN 地址使用明文 HTTP，只有在应用配置显式启用 `allowInsecurePrivateNetwork` 且主机是受信任的私有 IPv4 时才可接受；Host 固定为 `192.168.50.229`，HTTP 端口固定 `8080`，公共/非私网地址、其他 Host/端口、HTTPS/HTTP scheme 变更、查询串及不在更新渠道路径内的地址都会被拒绝。该例外仅适合信任的本地网络；不适用于公共 Wi-Fi、未知设备可接入的网络或互联网分发。外网设备不能访问此更新源。
 
 仍保留全部内容级信任校验：RSA-3072 公钥验签 RSA-PSS/SHA-256，清单严格 JSON、平台/渠道/架构/build 兼容检查，下载大小及 SHA-256，Windows Authenticode 发布证书 SHA-256 pin。服务端只提供静态 GET/HEAD，不提供 HTTP 上传。网络可观察/拦截流量，因此此 LAN HTTP 例外需要服务端与发布设备可信；不降低清单和安装包验证。
@@ -26,7 +28,7 @@ Mac mini 上已执行 `Project/Windows/scripts/Setup-LanUpdateServer.sh`：创�
 
 健康检查可访问：
 
-- `http://192.168.50.229:8080/updates/windows/stable/feige-windows-update.json`（尚无发布时应返回 404）
+- `http://192.168.50.229:8080/updates/windows/stable/feige-windows-update.json`（截至 2026-11-02 返回 HTTP 200；签名清单验证通过，记录 1.2.1 build 1301）
 - 局域网另一台客户端也须能通过上述 URL 访问
 
 Mac mini DHCP 地址需保持固定；nginx 由现有 Homebrew LaunchAgent 管理。该主机目前 macOS 12.7.6 / Intel x86_64，不能作为 Windows 安装包构建/签名环境。
@@ -48,7 +50,7 @@ GitHub 来源与局域网来源共用同一份签名清单与同一批公钥、�
 - Release 资产需包含：安装包、清单 `feige-windows-update.json`，以及与清单一致的 `windows/stable/versions/<tag>/` 路径内容。GitHub 不支持在资产名中保留子目录，所以当前每次只发布清单（其中记录本版本的下载地址）。
 - 清单中的 `downloadUrl` / `notesUrl` 必须落在该来源的 `baseUri` 之下，否则清单会被拒绝——局域网清单指向内网地址，GitHub 清单指向 GitHub 地址，二者不能互换。
 - GitHub 下载会 302 跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`；这两个主机必须列在 GitHub 来源的 `redirectHosts` 中，且只允许 HTTPS 443、无查询串。
-- 已发布的 `v1.2.1` Release 目前只含安装包与校验文件，尚未上传签名清单；在清单上传前，GitHub 来源会因 404 自动回退，不影响内网更新。
+- 已发布的 `v1.2.1` Release 目前只含安装包与校验文件，尚未上传签名清单；2026-11-02 从 ROG 请求 latest-release 清单返回 HTTP 404。清单上传前，GitHub 来源会因 404 自动回退，不影响 LAN 来源。
 
 ## 更安全的远程访问
 

@@ -15,6 +15,28 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-02 Windows 更新旧配置兼容与签名清单验证
+
+- **兼容修复**：应用启动改用共享 `UpdateSources.Parse`，同时接受新版有序 `sources` 与旧版顶层 `baseUri` / `trustedHosts` 配置；旧格式归一为单来源。UpdateTool 和 UpdateProbe 也统一使用该解析器。无效新版多来源 JSON 仍按严格规则拒绝，不会回退成旧格式。
+- **自动化回归**：新增旧版 JSON 归一化、新版来源顺序和非法新版拒绝测试。ROG Windows 11 x64 / .NET SDK 10.0.402 上，更新相关 Core 用例 62/62 通过；当前 Core 全量 581/581 通过于 macOS 上的 .NET 11 RC（通过 `DOTNET_ROLL_FORWARD=Major` 运行 net10 测试目标）。
+- **编译**：ROG 上 `Feige.App` x64 Release 非打包编译、`Feige.UpdateTool` Release 与 `UpdateProbe` Release 均通过，0 警告、0 错误。
+- **线上清单只读检查**：Windows .NET 10 UpdateTool 验证了从 Mac mini 读取的 LAN 签名清单和来源 URL，内容为 1.2.1 build 1301。ROG 无法访问 LAN 更新端口 8080；GitHub latest-release 清单 URL 返回 HTTP 404。没有下载安装包、验证安装包 Authenticode、安装应用或发布清单，因此客户端更新端到端仍未完成。
+- **清理**：测试源码副本、manifest 副本和临时压缩包均已清理。
+
+## 2026-11-02 ROG Windows x64 原始全量回归基线（commit ac9a3d8）
+
+- **环境与隔离**：ROG Windows `10.0.26200.0`、x64、.NET SDK `10.0.402`。从 commit `ac9a3d8` 将 `Project/Windows/` 与 `Project/Docs/Public/TestVectors/` 复制到唯一临时树 `C:\Users\jiong\AppData\Local\Temp\FeigeX64Tests-ac9a3d8`；App 测试启用 `FeigeTestIsolation=true`，测试数据目录指向临时树内的 `isolated-appdata`，未启用 UI profile provisioning。
+- **Core x64 回归**：`Feige.Core.Tests` 578/578 通过，0 失败、0 跳过，43 秒；编译有一条既存 `CS8604` nullable 警告，位置 `UpdateMultiSourceTests.cs(81,42)`。
+- **App x64 回归**：`Feige.App.Tests` 8/8 通过，0 失败、0 跳过，56 秒；App x64 项目编译成功。
+- **复现命令**：
+
+  ```powershell
+  dotnet test .\tests\Feige.Core.Tests\Feige.Core.Tests.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:UseSharedCompilation=false
+  dotnet test .\tests\Feige.App.Tests\Feige.App.Tests.csproj -c Release -p:Platform=x64 -p:RuntimeIdentifier=win-x64 -p:FeigeTestIsolation=true -p:UseSharedCompilation=false
+  ```
+
+- **范围与清理**：未安装或启动应用、未生成 MSIX/EXE。确认测试进程结束后，删除临时源码、构建树与传输压缩包。
+
 ## 2026-11-02 网络切换后清理失效会话通道
 
 - **行为**：网络地址变化后暂拒新的入站握手；防抖 750 ms 后关闭现有 v3/v4 聊天通道，再刷新设备发现。监听端口、设备身份、会话历史和草稿保留。未完成消息标记失败，支持重试的发送项可在重新连接获准后重发。

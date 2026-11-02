@@ -55,7 +55,7 @@ public sealed class AppUpdates
             long build = long.TryParse(metadata.GetValueOrDefault("FeigeBuildNumber"), out var parsed) ? parsed : 0;
             string architecture = RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant();
             string installation = AppEnvironment.IsPackaged ? "msix" : "exe";
-            _sources = JsonSerializer.Deserialize<UpdateSources>(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Updates", "UpdateSource.json")), UpdateManifest.Json);
+            _sources = UpdateSources.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Updates", "UpdateSource.json")));
             _target = new(architecture, _sources?.Channel ?? "stable", installation, version, build, Environment.OSVersion.Version);
             VersionText = $"版本 {version} · 构建 {build} · {architecture.ToUpperInvariant()} · {(_target.Channel == "stable" ? "正式版" : "测试版")} · {installation.ToUpperInvariant()}";
             if (AppEnvironment.IsPackaged) Status = "MSIX 请通过对应发行渠道更新，不会转换为 EXE 安装。";

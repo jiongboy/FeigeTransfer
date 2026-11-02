@@ -67,7 +67,7 @@ public sealed class UpdateMultiSourceTests
         Assert.Throws<InvalidDataException>(() => many.Validate());
     }
 
-    [Fact] public void LegacySingleOriginFields_StillValidate()
+    [Fact] public void LegacySingleOriginJson_IsParsedAndNormalized()
     {
         using var f = new Fixture();
         var legacy = f.LanSource with
@@ -75,10 +75,47 @@ public sealed class UpdateMultiSourceTests
             PublicKeys = new() { ["release-1"] = f.PublicKey },
             PublisherCertificateSha256 = [],
             Label = null,
+            Hosts = null,
+            RedirectHosts = null,
         };
-        legacy.Validate();
-        var resolved = (f.Sources with { Sources = [legacy] }).Resolve()[0];
-        Assert.Equal(["192.168.50.229"], resolved.Hosts);
+        string json = JsonSerializer.Serialize(new
+        {
+            legacy.Channel,
+            legacy.PublicKeys,
+            legacy.PublisherCertificateSha256,
+            legacy.BaseUri,
+            legacy.TrustedHosts,
+            legacy.AllowInsecurePrivateNetwork,
+        }, UpdateManifest.Json);
+
+        var parsed = UpdateSources.Parse(json);
+        var source = Assert.Single(parsed.Resolve());
+        Assert.Equal("stable", parsed.Channel);
+        Assert.Equal(["192.168.50.229"], source.Hosts ?? []);
+        Assert.Equal(["192.168.50.229"], source.TrustedHosts ?? []);
+        Assert.Equal(f.PublicKey, source.PublicKeys["release-1"]);
+        Assert.True(source.AllowInsecurePrivateNetwork);
+    }
+
+    [Fact] public void MultiSourceJson_IsParsedInConfiguredOrder()
+    {
+        using var f = new Fixture();
+        string json = JsonSerializer.Serialize(f.Sources, UpdateManifest.Json);
+
+        var parsed = UpdateSources.Parse(json);
+        Assert.Equal(["lan", "github"], parsed.Resolve().Select(source => source.Id));
+    }
+
+    [Fact] public void EmptyMultiSourceConfig_RemainsUnconfigured()
+    {
+        const string json = """{"channel":"stable","publicKeys":{},"publisherCertificateSha256":[],"sources":[]}""";
+        Assert.False(UpdateSources.Parse(json).IsConfigured);
+    }
+
+    [Fact] public void InvalidMultiSourceJson_DoesNotFallBackToLegacyFields()
+    {
+        const string json = """{"channel":"stable","publicKeys":{},"publisherCertificateSha256":[],"sources":[],"baseUri":"https://updates.example","trustedHosts":["updates.example"]}""";
+        Assert.Throws<JsonException>(() => UpdateSources.Parse(json));
     }
 
     [Fact] public void GitHubReleaseUrls_AreAcceptedOnlyOnTheGitHubOrigin()

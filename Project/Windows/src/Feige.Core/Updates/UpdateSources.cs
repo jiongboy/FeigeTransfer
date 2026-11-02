@@ -117,6 +117,27 @@ public sealed record UpdateSource(string Channel,
 public sealed record UpdateSources(string Channel, Dictionary<string, string> PublicKeys,
     string[] PublisherCertificateSha256, UpdateSource[] Sources)
 {
+    /// <summary>Parses current multi-source or legacy single-source JSON, normalizing legacy fields.</summary>
+    public static UpdateSources Parse(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            throw new JsonException("更新来源必须是 JSON 对象。");
+
+        if (document.RootElement.TryGetProperty("sources", out _))
+        {
+            var current = JsonSerializer.Deserialize<UpdateSources>(json, UpdateManifest.Json)
+                ?? throw new InvalidDataException("更新来源为空。");
+            return current;
+        }
+
+        var legacy = JsonSerializer.Deserialize<UpdateSource>(json, UpdateManifest.Json)
+            ?? throw new InvalidDataException("更新来源为空。");
+        var normalized = legacy.Normalize();
+        return new UpdateSources(normalized.Channel, normalized.PublicKeys,
+            normalized.PublisherCertificateSha256, [normalized]);
+    }
+
     public bool IsConfigured => Sources is { Length: > 0 } && PublicKeys is { Count: > 0 };
 
     /// <summary>Validated origins with the shared channel, keys and pins applied.</summary>

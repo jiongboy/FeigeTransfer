@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using Feige.Core.Updates;
 
 // Read-only update pipeline probe: fetch signed manifest, select a release, download it,
@@ -23,8 +22,7 @@ byte[] sourceBytes = File.ReadAllBytes(sourcePath);
 if (sourceBytes.Length >= 3 && sourceBytes[0] == 0xEF && sourceBytes[1] == 0xBB && sourceBytes[2] == 0xBF)
     sourceBytes = sourceBytes[3..];
 // The probe exercises the same ordered-source fallback the app uses.
-var sources = JsonSerializer.Deserialize<UpdateSources>(sourceBytes, UpdateManifest.Json)
-    ?? throw new InvalidDataException("source config empty");
+var sources = UpdateSources.Parse(Encoding.UTF8.GetString(sourceBytes));
 sources.Validate();
 Console.WriteLine($"sources: {string.Join(", ", sources.Sources.Select(s => s.Label ?? s.BaseUri))} channel={sources.Channel}");
 
