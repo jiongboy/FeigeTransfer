@@ -26,11 +26,19 @@ public sealed record TransferProgress(string FileName, long Transferred, long To
 /// <summary>One application-owned v3 conversation. Pages observe state; they never own sockets or read loops.</summary>
 public sealed class AppSession
 {
+    private const int V3SlotFree = 0;
+    private const int V3SlotActive = 1;
+    // Keeps outbound connects from claiming the slot during an approved inbound handoff.
+    private const int V3SlotReplacement = 2;
+
     public static AppSession Current { get; } = new();
     private DispatcherQueue? _dispatcher;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _startup = new(1);
     private CancellationTokenSource? _connectionCts;
+    private string? _connectionSlotFingerprint;
+    private int _networkPathRefreshPending;
+    private long _networkPathGeneration;
     private V3Connection? _connection;
     private V4Connection? _v4Connection;
     private PeerConnectionRegistry<V4Connection>? _v4Connections;
@@ -44,6 +52,8 @@ public sealed class AppSession
     }
     private readonly object _v4Gate = new();
     private readonly Dictionary<string, V4PeerRuntime> _v4Runtimes = new(StringComparer.Ordinal);
+    // Prevents repeated forced replacement while the newly accepted peer channel stays active.
+    private readonly HashSet<string> _v4ReconnectReplacementPrimed = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CancellationTokenSource> _v4Pending = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource> _v4PendingByPeer = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _sendingTextPeers = new(StringComparer.Ordinal);
@@ -52,6 +62,14 @@ public sealed class AppSession
     private int _v4GroupConnecting;
     private bool _groupRosterSubscribed;
     private Task? _acceptLoop, _v4AcceptLoop, _runner;
+    private V3Connection? _runnerConnection;
+    private readonly object _v3SlotGate = new();
+    private TaskCompletionSource<bool>? _v3SlotCompletion;
+    private readonly object _v3RunnerGate = new();
+    private readonly object _v3AcceptGate = new();
+    private CancellationTokenSource? _v3PendingAcceptCts;
+    private TaskCompletionSource<bool>? _v3PendingAcceptCompletion;
+    private string? _v3PendingAcceptFingerprint;
     private CancellationTokenSource? _networkCts, _networkRefreshDelay;
     private int _connectionSlot, _sendingFiles, _sendingText;
     private bool V4GroupRoutingReady => Groups is not null;
@@ -97,16 +115,16 @@ public sealed class AppSession
     public bool IsRefreshingPeers { get; private set; }
     public DateTimeOffset? LastPeerRefreshAt { get; private set; }
     public bool PeerRefreshFailed { get; private set; }
-    public bool IsConnecting => (_connectionSlot != 0 && _connection is null) || Volatile.Read(ref _v4Connecting) != 0 || Volatile.Read(ref _v4GroupConnecting) != 0;
+    public bool IsConnecting => (Volatile.Read(ref _connectionSlot) != V3SlotFree && _connection is null) || Volatile.Read(ref _v4Connecting) != 0 || Volatile.Read(ref _v4GroupConnecting) != 0;
     public bool IsSendingFiles => _sendingFiles != 0;
     public bool IsSendingText => _sendingText != 0;
-    public bool CanConnect => IsRunning && !IsStarting && !IsInstallingUpdate && Settings.Setup.Ended && _connectionSlot == 0;
+    public bool CanConnect => IsRunning && !IsStarting && !IsInstallingUpdate && Settings.Setup.Ended && Volatile.Read(ref _connectionSlot) == V3SlotFree;
     public bool CanConnectV4 => IsRunning && !IsStarting && !IsInstallingUpdate && Settings.Setup.Ended &&
         (_v4Connections?.DirectPeerCount ?? 0) + Volatile.Read(ref _v4Connecting) < PeerConnectionRegistry<V4Connection>.MaximumDirectPeers;
     public bool IsConnectingTo(ConversationItem? conversation) => conversation is null
         ? IsConnecting
         : _v4PendingByPeer.ContainsKey(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint)) ||
-          (_connectionSlot != 0 && _connection is null && _v4PendingByPeer.Count == 0);
+          (Volatile.Read(ref _connectionSlot) != V3SlotFree && _connection is null && _v4PendingByPeer.Count == 0);
     public bool IsConnected(ConversationItem? conversation)
     {
         if (conversation is null) return false;
@@ -121,19 +139,41 @@ public sealed class AppSession
         _dispatcher = dispatcher;
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
     }
-    private void OnNetworkAddressChanged(object? sender, EventArgs e) => Post(() =>
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
     {
-        if (_lifetime.IsCancellationRequested) return;
-        _networkRefreshDelay?.Cancel();
-        _networkRefreshDelay = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        _ = RefreshAfterNetworkChangeAsync(_networkRefreshDelay);
-    });
-    private async Task RefreshAfterNetworkChangeAsync(CancellationTokenSource delay)
+        long generation = Interlocked.Increment(ref _networkPathGeneration);
+        Interlocked.Exchange(ref _networkPathRefreshPending, 1);
+        CancelV3PendingAccept();
+        Post(() =>
+        {
+            if (_lifetime.IsCancellationRequested || generation != Volatile.Read(ref _networkPathGeneration)) return;
+            _networkRefreshDelay?.Cancel();
+            var delay = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            _networkRefreshDelay = delay;
+            _ = RefreshAfterNetworkChangeAsync(delay, generation);
+        });
+    }
+    private async Task RefreshAfterNetworkChangeAsync(CancellationTokenSource delay, long generation)
     {
-        try { await Task.Delay(750, delay.Token); await RefreshDiscoveryAsync(delay.Token); }
+        try
+        {
+            await Task.Delay(750, delay.Token);
+            await DisconnectAsync();
+            delay.Token.ThrowIfCancellationRequested();
+            await RefreshDiscoveryAsync(delay.Token);
+        }
         catch (OperationCanceledException) { }
         catch (Exception ex) { AppLog.Write("network refresh: " + ex.GetType().Name); }
-        finally { if (ReferenceEquals(_networkRefreshDelay, delay)) _networkRefreshDelay = null; delay.Dispose(); }
+        finally
+        {
+            if (ReferenceEquals(_networkRefreshDelay, delay))
+            {
+                _networkRefreshDelay = null;
+                if (!delay.IsCancellationRequested && generation == Volatile.Read(ref _networkPathGeneration))
+                    Interlocked.Exchange(ref _networkPathRefreshPending, 0);
+            }
+            delay.Dispose();
+        }
     }
 
     public void ReloadSettings() { Settings = AppSettings.Load(); Changed(); }
@@ -440,7 +480,8 @@ public sealed class AppSession
     public Task ConnectAsync(IPEndPoint endpoint) => ConnectAsync([endpoint], 3);
     public Task ConnectAsync(DiscoveredPeer peer) => peer.ProtocolVersion switch
     {
-        3 => ConnectAsync(peer.EndPoints, 3),
+        3 => ConnectAsync(peer.EndPoints, 3,
+            string.IsNullOrWhiteSpace(peer.Fingerprint) ? null : ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
         4 when !string.IsNullOrWhiteSpace(peer.Fingerprint) => ConnectAsync(peer.EndPoints, 4, ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
         4 => Task.FromException(new InvalidOperationException("发现信息未包含有效的 v4 设备身份，请刷新设备列表后重试。")),
         5 when !string.IsNullOrWhiteSpace(peer.Fingerprint) => ConnectAsync(peer.EndPoints, 5, ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
@@ -453,29 +494,65 @@ public sealed class AppSession
     {
         using var work = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后连接。");
         if (!IsRunning || !Settings.Setup.Ended || Device is null) throw new InvalidOperationException("安全连接尚未准备好，请稍后重试。");
-        if (protocolVersion >= 4 && expectedFingerprint is not null && _v4Connections is not null &&
-            _v4Connections.TryGet(expectedFingerprint, out var existing) && existing is not null)
+        var existingRegistry = _v4Connections;
+        if (protocolVersion >= 4 && expectedFingerprint is not null && existingRegistry is not null)
         {
-            if (existing.IsClosed) _v4Connections.Remove(expectedFingerprint, existing);
-            else
+            V4Connection? reusable = null;
+            lock (_v4Gate)
             {
-                if (direct && !_v4Connections.IsDirect(expectedFingerprint))
-                    _v4Connections.Register(existing, expectedFingerprint, existing.InitiatorFingerprint, existing.TranscriptDigest, direct: true);
+                if (existingRegistry.TryGet(expectedFingerprint, out var current) && current is not null)
+                {
+                    if (current.IsClosed)
+                    {
+                        existingRegistry.Remove(expectedFingerprint, current);
+                        if (!existingRegistry.TryGet(expectedFingerprint, out _))
+                            _v4ReconnectReplacementPrimed.Remove(expectedFingerprint);
+                    }
+                    else
+                    {
+                        reusable = current;
+                        if (direct && !existingRegistry.IsDirect(expectedFingerprint))
+                            reusable = existingRegistry.Register(current, expectedFingerprint, current.InitiatorFingerprint,
+                                current.TranscriptDigest, direct: true).Active;
+                    }
+                }
+            }
+            if (reusable is not null)
+            {
+                var reusableConnection = reusable;
+                bool stillActive = false;
                 if (direct)
                     await OnUiAsync(() =>
                     {
-                        _v4Connection = existing; ActiveFingerprint = expectedFingerprint;
-                        var conversation = FindConversation(expectedFingerprint, existing.PeerName);
-                        conversation.Name = existing.PeerName; conversation.State = "已连接";
-                        Publish("已连接 · " + existing.PeerName); Changed();
+                        lock (_v4Gate)
+                        {
+                            if (reusableConnection.IsClosed || !existingRegistry.TryGet(expectedFingerprint, out var current) ||
+                                !ReferenceEquals(current, reusableConnection)) return;
+                            _v4Connection = reusableConnection; ActiveFingerprint = expectedFingerprint;
+                            var conversation = FindConversation(expectedFingerprint, reusableConnection.PeerName);
+                            conversation.Name = reusableConnection.PeerName; conversation.State = "已连接";
+                            Publish("已连接 · " + reusableConnection.PeerName); Changed();
+                            stillActive = true;
+                        }
                     });
-                return;
+                else
+                    lock (_v4Gate)
+                        stillActive = !reusableConnection.IsClosed && existingRegistry.TryGet(expectedFingerprint, out var current) &&
+                            ReferenceEquals(current, reusableConnection);
+                if (stillActive) return;
             }
         }
         bool groupOnlyReservation = protocolVersion >= 4 && !direct;
+        var networkToken = _networkCts?.Token ?? _lifetime.Token;
+        CancellationTokenSource? v3Cancellation = null;
         if (protocolVersion == 3)
         {
-            if (Interlocked.CompareExchange(ref _connectionSlot, 1, 0) != 0) throw new InvalidOperationException("v3 当前仅支持一个活动连接。");
+            v3Cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, networkToken);
+            if (!TryTransitionV3Slot(V3SlotFree, V3SlotActive, expectedFingerprint, v3Cancellation))
+            {
+                v3Cancellation.Dispose();
+                throw new InvalidOperationException("v3 当前仅支持一个活动连接。");
+            }
         }
         else if (protocolVersion >= 4)
         {
@@ -497,11 +574,9 @@ public sealed class AppSession
         }
         else throw new InvalidOperationException("不支持的协议版本。");
 
-        var networkToken = _networkCts?.Token ?? _lifetime.Token;
-        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, networkToken);
+        var cancellation = v3Cancellation ?? CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, networkToken);
         Guid pendingId = Guid.NewGuid();
-        if (protocolVersion == 3) _connectionCts = cancellation;
-        else
+        if (protocolVersion >= 4)
         {
             _v4Pending[pendingId] = cancellation;
             if (expectedFingerprint is not null && !_v4PendingByPeer.TryAdd(expectedFingerprint, cancellation))
@@ -521,7 +596,15 @@ public sealed class AppSession
             if (protocolVersion == 3)
             {
                 var connection = await Task.Run(() => V3PeerConnector.ConnectAsync(endpoints, Device, cancellation.Token));
-                try { cancellation.Token.ThrowIfCancellationRequested(); await AttachAsync(connection, cancellation); attached = true; }
+                try
+                {
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    if (expectedFingerprint is not null &&
+                        ConversationHistory.NormalizeFingerprint(connection.PeerFingerprint) != expectedFingerprint)
+                        throw new InvalidDataException("连接设备身份与发现信息不一致。");
+                    await AttachAsync(connection, cancellation);
+                    attached = true;
+                }
                 catch { connection.Close(); throw; }
             }
             else
@@ -547,7 +630,12 @@ public sealed class AppSession
         {
             if (protocolVersion == 3)
             {
-                if (!attached) { _connectionCts = null; cancellation.Dispose(); Interlocked.Exchange(ref _connectionSlot, 0); Changed(); }
+                if (!attached)
+                {
+                    cancellation.Dispose();
+                    TryTransitionV3Slot(V3SlotActive, V3SlotFree, null, expectedConnectionCts: cancellation);
+                    Changed();
+                }
             }
             else
             {
@@ -561,29 +649,230 @@ public sealed class AppSession
         }
     }
 
+    // Keep slot state and its peer identity in one short transition; no caller awaits while holding the gate.
+    private bool TryTransitionV3Slot(int expected, int next, string? fingerprint,
+        CancellationTokenSource? connectionCts = null, CancellationTokenSource? expectedConnectionCts = null,
+        string? expectedFingerprint = null)
+    {
+        lock (_v3SlotGate)
+        {
+            if (Volatile.Read(ref _connectionSlot) != expected) return false;
+            if (expectedConnectionCts is not null && !ReferenceEquals(_connectionCts, expectedConnectionCts)) return false;
+            if (expectedFingerprint is not null &&
+                (_connectionSlotFingerprint is null || !SameFingerprint(_connectionSlotFingerprint, expectedFingerprint))) return false;
+            if (next == V3SlotFree && expectedConnectionCts is null && expectedFingerprint is null) return false;
+            if (connectionCts is not null) _connectionCts = connectionCts;
+            if (expected == V3SlotFree && next != V3SlotFree)
+                _v3SlotCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _connectionSlotFingerprint, next == V3SlotFree ? null : fingerprint);
+            Volatile.Write(ref _connectionSlot, next);
+            if (next == V3SlotFree)
+            {
+                _connectionCts = null;
+                var completion = _v3SlotCompletion;
+                _v3SlotCompletion = null;
+                completion?.TrySetResult(true);
+            }
+            return true;
+        }
+    }
+
+    private (bool Targets, Task? Completion, CancellationTokenSource? Cancellation, V3Connection? Connection)
+        GetV3SlotDrain(string? fingerprint)
+    {
+        lock (_v3SlotGate)
+        {
+            if (Volatile.Read(ref _connectionSlot) == V3SlotFree) return (false, null, null, null);
+            var active = _connection;
+            bool matches = fingerprint is null ||
+                (_connectionSlotFingerprint is not null && SameFingerprint(_connectionSlotFingerprint, fingerprint)) ||
+                (active is not null && SameFingerprint(active.PeerFingerprint, fingerprint));
+            return (matches, matches ? _v3SlotCompletion?.Task : null, matches ? _connectionCts : null,
+                matches ? active : null);
+        }
+    }
+
+    private async Task<(bool Reserved, V3Connection? Active, CancellationTokenSource? ActiveCancellation)>
+        TryReserveV3ReplacementSlotAsync(string fingerprint, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int slot;
+            V3Connection? active;
+            CancellationTokenSource? activeCancellation;
+            string? pendingFingerprint;
+            lock (_v3SlotGate)
+            {
+                slot = Volatile.Read(ref _connectionSlot);
+                active = _connection;
+                activeCancellation = _connectionCts;
+                pendingFingerprint = _connectionSlotFingerprint;
+            }
+            if (slot == V3SlotReplacement) return (false, null, null);
+            if (slot == V3SlotFree)
+            {
+                if (TryTransitionV3Slot(V3SlotFree, V3SlotReplacement, fingerprint)) return (true, null, null);
+                continue;
+            }
+            if (slot != V3SlotActive) return (false, null, null);
+
+            if (active is not null)
+            {
+                if (!SameFingerprint(active.PeerFingerprint, fingerprint) || activeCancellation is null)
+                    return (false, null, null);
+                if (TryTransitionV3Slot(V3SlotActive, V3SlotReplacement, fingerprint,
+                    expectedConnectionCts: activeCancellation, expectedFingerprint: pendingFingerprint))
+                    return (true, active, activeCancellation);
+                continue;
+            }
+
+            // Let a same-peer outbound attempt finish; keep unrelated attempts and reject only this inbound candidate.
+            if (pendingFingerprint is not null && !SameFingerprint(pendingFingerprint, fingerprint))
+                return (false, null, null);
+            await Task.Delay(10, cancellationToken);
+        }
+    }
+
+    private async Task WaitForV3RunnerAsync(V3Connection connection, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            Task? runner;
+            lock (_v3RunnerGate)
+                runner = ReferenceEquals(_runnerConnection, connection) ? _runner : null;
+            if (runner is not null)
+            {
+                await runner.WaitAsync(cancellationToken);
+                return;
+            }
+            bool stillAttached;
+            lock (_v3SlotGate) stillAttached = ReferenceEquals(_connection, connection);
+            if (!stillAttached) return;
+            await Task.Delay(10, cancellationToken);
+        }
+    }
+
+    private bool TryBeginV3PendingAccept(string fingerprint, CancellationTokenSource cancellation,
+        TaskCompletionSource<bool> completion)
+    {
+        lock (_v3AcceptGate)
+        {
+            if (_v3PendingAcceptCts is not null) return false;
+            _v3PendingAcceptCts = cancellation;
+            _v3PendingAcceptCompletion = completion;
+            _v3PendingAcceptFingerprint = fingerprint;
+            return true;
+        }
+    }
+
+    private Task? CancelV3PendingAccept(string? fingerprint = null)
+    {
+        CancellationTokenSource? cancellation;
+        Task? completion;
+        lock (_v3AcceptGate)
+        {
+            cancellation = _v3PendingAcceptCts;
+            if (cancellation is null || (fingerprint is not null &&
+                (_v3PendingAcceptFingerprint is null || !SameFingerprint(_v3PendingAcceptFingerprint, fingerprint))))
+                return null;
+            completion = _v3PendingAcceptCompletion?.Task;
+        }
+        try { cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        return completion;
+    }
+
+    private void EndV3PendingAccept(CancellationTokenSource cancellation, TaskCompletionSource<bool> completion)
+    {
+        lock (_v3AcceptGate)
+        {
+            if (ReferenceEquals(_v3PendingAcceptCts, cancellation))
+            {
+                _v3PendingAcceptCts = null;
+                _v3PendingAcceptCompletion = null;
+                _v3PendingAcceptFingerprint = null;
+            }
+        }
+        cancellation.Dispose();
+        completion.TrySetResult(true);
+    }
+
     private async Task AcceptLoopAsync(CancellationToken networkToken)
     {
         while (!networkToken.IsCancellationRequested)
         {
             var cancellation = CancellationTokenSource.CreateLinkedTokenSource(networkToken);
+            CancellationTokenSource? pendingAcceptCts = null;
+            TaskCompletionSource<bool>? pendingAcceptCompletion = null;
+            CancellationTokenRegistration pendingAcceptRegistration = default;
+            V3Connection? replacementPrevious = null;
+            string? reservedFingerprint = null;
             bool reserved = false, attached = false;
             IDisposable? acceptingWork = null;
             try
             {
-                var connection = await Listener!.AcceptAsync(() => Device!, async (name, ct) =>
+                var connection = await Listener!.AcceptAsync(() => Device!, async (name, fingerprint, ct) =>
                 {
-                    if (!Settings.Setup.Ended || !IsRunning) return false;
+                    if (!Settings.Setup.Ended || !IsRunning || Volatile.Read(ref _networkPathRefreshPending) != 0) return false;
                     acceptingWork = _updateWork.TryEnter();
                     if (acceptingWork is null) return false;
-                    if (Interlocked.CompareExchange(ref _connectionSlot, 1, 0) != 0) return false;
-                    reserved = true; _connectionCts = cancellation;
-                    Publish("收到连接请求，等待本机同意…"); Changed();
-                    return await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, ct);
+
+                    var candidateCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token, ct);
+                    var candidateCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    string peerFingerprint = ConversationHistory.NormalizeFingerprint(fingerprint);
+                    if (!TryBeginV3PendingAccept(peerFingerprint, candidateCancellation, candidateCompletion))
+                    {
+                        candidateCancellation.Dispose();
+                        return false;
+                    }
+                    pendingAcceptCts = candidateCancellation;
+                    pendingAcceptCompletion = candidateCompletion;
+                    pendingAcceptRegistration = candidateCancellation.Token.Register(static state =>
+                    {
+                        try { ((CancellationTokenSource)state!).Cancel(); } catch (ObjectDisposedException) { }
+                    }, cancellation);
+
+                    bool accepted;
+                    if (TryTransitionV3Slot(V3SlotFree, V3SlotActive, peerFingerprint, cancellation))
+                    {
+                        reserved = true;
+                        reservedFingerprint = peerFingerprint;
+                        Publish("收到连接请求，等待本机同意…"); Changed();
+                        accepted = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, candidateCancellation.Token);
+                        if (!accepted) return false;
+                        candidateCancellation.Token.ThrowIfCancellationRequested();
+                        return true;
+                    }
+
+                    V3Connection? active;
+                    lock (_v3SlotGate) active = _connection;
+                    if (active is null || !SameFingerprint(active.PeerFingerprint, fingerprint)) return false;
+                    Publish("收到已连接设备的重连请求，等待本机同意…"); Changed();
+                    accepted = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, candidateCancellation.Token);
+                    if (!accepted) return false;
+                    candidateCancellation.Token.ThrowIfCancellationRequested();
+
+                    var reservation = await TryReserveV3ReplacementSlotAsync(peerFingerprint, candidateCancellation.Token);
+                    if (!reservation.Reserved) return false;
+                    reserved = true;
+                    reservedFingerprint = peerFingerprint;
+                    replacementPrevious = reservation.Active;
+                    if (replacementPrevious is { } previous)
+                    {
+                        try { reservation.ActiveCancellation?.Cancel(); } catch (ObjectDisposedException) { }
+                        previous.Close();
+                        await WaitForV3RunnerAsync(previous, candidateCancellation.Token);
+                    }
+                    candidateCancellation.Token.ThrowIfCancellationRequested();
+                    if (!TryTransitionV3Slot(V3SlotReplacement, V3SlotActive, peerFingerprint, cancellation))
+                        throw new InvalidOperationException("无法完成 v3 重连的连接槽交接。");
+                    return true;
                 }, cancellation.Token);
                 try { cancellation.Token.ThrowIfCancellationRequested(); await AttachAsync(connection, cancellation); attached = true; }
                 catch { connection.Close(); throw; }
             }
             catch (OperationCanceledException) when (networkToken.IsCancellationRequested) { break; }
+            catch (OperationCanceledException) when (pendingAcceptCts?.IsCancellationRequested == true) { }
             catch (Exception ex)
             {
                 AppLog.Write($"accept: {ex.GetType().Name}");
@@ -592,10 +881,33 @@ public sealed class AppSession
             finally
             {
                 acceptingWork?.Dispose();
-                if (!attached)
+                try
                 {
-                    if (reserved) { _connectionCts = null; Interlocked.Exchange(ref _connectionSlot, 0); Changed(); }
-                    cancellation.Dispose();
+                    if (!attached && reserved && replacementPrevious is not null)
+                    {
+                        replacementPrevious.Close();
+                        await WaitForV3RunnerAsync(replacementPrevious, CancellationToken.None);
+                    }
+                }
+                finally
+                {
+                    if (!attached)
+                    {
+                        if (reserved)
+                        {
+                            bool released = TryTransitionV3Slot(V3SlotReplacement, V3SlotFree, null,
+                                expectedFingerprint: reservedFingerprint);
+                            if (!released) released = TryTransitionV3Slot(V3SlotActive, V3SlotFree, null,
+                                expectedConnectionCts: cancellation);
+                            if (released) Changed();
+                        }
+                        cancellation.Dispose();
+                    }
+                    if (pendingAcceptCts is not null && pendingAcceptCompletion is not null)
+                    {
+                        pendingAcceptRegistration.Dispose();
+                        EndV3PendingAccept(pendingAcceptCts, pendingAcceptCompletion);
+                    }
                 }
             }
         }
@@ -617,13 +929,20 @@ public sealed class AppSession
             {
                 candidate = await V4Listener!.AcceptAsync(() => Device!, async (name, ct) =>
                 {
-                    if (!Settings.Setup.Ended || !IsRunning || _v4Connections is null) return false;
+                    if (!Settings.Setup.Ended || !IsRunning || _v4Connections is null ||
+                        Volatile.Read(ref _networkPathRefreshPending) != 0) return false;
                     acceptingWork = _updateWork.TryEnter();
                     if (acceptingWork is null) return false;
                     Publish("收到 v4 连接请求，等待本机同意…"); Changed();
-                    return await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, ct);
+                    bool accepted = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, ct);
+                    return accepted && Volatile.Read(ref _networkPathRefreshPending) == 0;
                 }, cancellation.Token);
                 cancellation.Token.ThrowIfCancellationRequested();
+                if (Volatile.Read(ref _networkPathRefreshPending) != 0)
+                {
+                    candidate.Close();
+                    continue;
+                }
                 AppLog.Write($"v4 accept: mounted peer={candidate.PeerFingerprint[..Math.Min(8, candidate.PeerFingerprint.Length)]}");
                 attached = await AttachV4Async(candidate, cancellation);
                 AppLog.Write($"v4 accept: attached={attached}");
@@ -743,14 +1062,68 @@ public sealed class AppSession
                 file.Kind == "image" ? MessageKind.Image : MessageKind.File, MessageState.Received, DateTimeOffset.Now, FileName: file.FileName, Path: path, Size: file.Size));
             await RecordFileAsync(TransferDirection.Received, new(file.FileName, path, file.Size, connection.PeerName, DateTimeOffset.Now));
         };
-        await Task.Run(() => _messages!.SetHidden(fingerprint, false));
-        await OnUiAsync(() =>
+        cancellation.Token.ThrowIfCancellationRequested();
+        var runnerStart = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runner = Task.Run(async () =>
         {
-            _connection = connection; ActiveFingerprint = fingerprint;
-            var conversation = FindConversation(fingerprint, connection.PeerName); conversation.Name = connection.PeerName; conversation.State = "已连接";
-            Publish("已连接 · " + connection.PeerName); Changed();
+            if (await runnerStart.Task.ConfigureAwait(false))
+                await RunConnectionAsync(connection, fingerprint, cancellation).ConfigureAwait(false);
         });
-        _runner = Task.Run(() => RunConnectionAsync(connection, fingerprint, cancellation));
+        try
+        {
+            lock (_v3RunnerGate)
+            {
+                cancellation.Token.ThrowIfCancellationRequested();
+                _runner = runner;
+                _runnerConnection = connection;
+            }
+            _ = runner.ContinueWith(_ =>
+            {
+                lock (_v3RunnerGate)
+                {
+                    if (ReferenceEquals(_runnerConnection, connection))
+                    {
+                        _runnerConnection = null;
+                        _runner = null;
+                    }
+                }
+                lock (_v3SlotGate)
+                {
+                    if (ReferenceEquals(_connection, connection)) _connection = null;
+                    if (Volatile.Read(ref _connectionSlot) == V3SlotActive && ReferenceEquals(_connectionCts, cancellation) &&
+                        _connection is null)
+                        TryTransitionV3Slot(V3SlotActive, V3SlotFree, null, expectedConnectionCts: cancellation);
+                }
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+            cancellation.Token.ThrowIfCancellationRequested();
+            await Task.Run(() => _messages!.SetHidden(fingerprint, false));
+            cancellation.Token.ThrowIfCancellationRequested();
+            bool committed = false;
+            await OnUiAsync(() =>
+            {
+                lock (_v3SlotGate)
+                {
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    if (Volatile.Read(ref _connectionSlot) != V3SlotActive || !ReferenceEquals(_connectionCts, cancellation))
+                        throw new InvalidOperationException("v3 连接槽已被取消或替换。");
+                    if (_connectionSlotFingerprint is not null && !SameFingerprint(_connectionSlotFingerprint, fingerprint))
+                        throw new InvalidDataException("连接设备身份与发现信息不一致。");
+                    Volatile.Write(ref _connectionSlotFingerprint, fingerprint);
+                    var conversation = FindConversation(fingerprint, connection.PeerName);
+                    conversation.Name = connection.PeerName; conversation.State = "已连接";
+                    _connection = connection; ActiveFingerprint = fingerprint;
+                    Publish("已连接 · " + connection.PeerName); Changed();
+                    committed = true;
+                }
+            });
+            runnerStart.TrySetResult(committed);
+        }
+        catch
+        {
+            runnerStart.TrySetResult(false);
+            throw;
+        }
     }
 
     private async Task<bool> AttachV4Async(V4Connection connection, CancellationTokenSource cancellation, bool? directIntent = null)
@@ -759,6 +1132,11 @@ public sealed class AppSession
         bool isGroupMember = Groups?.Groups.Any(group => group.Members.Any(member => SameFingerprint(member.Fingerprint, fingerprint))) == true;
         bool hasPrivateHistory = _messages?.Messages.Any(message => message.Fingerprint == fingerprint) == true;
         bool direct = directIntent ?? (!isGroupMember || hasPrivateHistory);
+        lock (_v4Gate)
+        {
+            // Preserve an existing direct relationship even when no private messages exist yet.
+            if (_v4Connections?.IsDirect(fingerprint) == true) direct = true;
+        }
         if (!direct && !isGroupMember) throw new InvalidDataException("群组专用连接的对端不是本机已确认的群组成员。");
         V4PeerRuntime runtime;
         connection.TextReceived = async message =>
@@ -873,11 +1251,22 @@ public sealed class AppSession
             }
         };
         if (direct) await Task.Run(() => _messages!.SetHidden(fingerprint, false));
+        if (directIntent is null && Volatile.Read(ref _networkPathRefreshPending) != 0)
+        {
+            connection.Close();
+            return false;
+        }
         V4PeerRuntime? supersededRuntime = null;
         lock (_v4Gate)
         {
             var registry = _v4Connections ?? throw new InvalidOperationException("v4 连接注册表尚未准备好。");
-            var result = registry.Register(connection, fingerprint, connection.InitiatorFingerprint, connection.TranscriptDigest, direct);
+            if (registry.IsDirect(fingerprint)) direct = true;
+            bool replaceExisting = direct && Volatile.Read(ref _v4Connecting) == 0 &&
+                !_v4ReconnectReplacementPrimed.Contains(fingerprint) && registry.TryGet(fingerprint, out _);
+            var result = registry.Register(connection, fingerprint, connection.InitiatorFingerprint,
+                connection.TranscriptDigest, direct, replaceExisting);
+            if (replaceExisting && result.Disposition == ConnectionRegistrationDisposition.Replaced)
+                _v4ReconnectReplacementPrimed.Add(fingerprint);
             if (result.Disposition == ConnectionRegistrationDisposition.ExistingKept)
             {
                 connection.Close();
@@ -899,30 +1288,38 @@ public sealed class AppSession
         {
             await OnUiAsync(() =>
             {
-                if (!_v4Connections!.TryGet(fingerprint, out var active) || !ReferenceEquals(active, connection)) return;
-                if (direct)
+                lock (_v4Gate)
                 {
-                    _v4Connection = connection; ActiveFingerprint = fingerprint;
-                    var conversation = FindConversation(fingerprint, connection.PeerName);
-                    conversation.Name = connection.PeerName; conversation.State = "已连接";
-                    Publish("已连接 · " + connection.PeerName);
+                    if (_v4Connections is null || !_v4Connections.TryGet(fingerprint, out var active) ||
+                        !ReferenceEquals(active, connection)) return;
+                    if (direct)
+                    {
+                        _v4Connection = connection; ActiveFingerprint = fingerprint;
+                        var conversation = FindConversation(fingerprint, connection.PeerName);
+                        conversation.Name = connection.PeerName; conversation.State = "已连接";
+                        Publish("已连接 · " + connection.PeerName);
+                    }
+                    else
+                    {
+                        var conversation = Conversations.FirstOrDefault(item => item.Fingerprint == fingerprint);
+                        if (conversation is not null) conversation.State = "群组已连接";
+                        Publish("群组成员连接已就绪 · " + connection.PeerName);
+                    }
+                    Changed();
                 }
-                else
-                {
-                    var conversation = Conversations.FirstOrDefault(item => item.Fingerprint == fingerprint);
-                    if (conversation is not null) conversation.State = "群组已连接";
-                    Publish("群组成员连接已就绪 · " + connection.PeerName);
-                }
-                Changed();
             });
             runtime.Runner = Task.Run(() => RunConnectionAsync(connection, fingerprint, cancellation));
             return true;
         }
         catch
         {
-            _v4Connections?.Remove(fingerprint, connection);
             lock (_v4Gate)
+            {
+                bool removed = _v4Connections?.Remove(fingerprint, connection) == true;
+                if (removed && (_v4Connections?.TryGet(fingerprint, out _) != true))
+                    _v4ReconnectReplacementPrimed.Remove(fingerprint);
                 if (_v4Runtimes.TryGetValue(fingerprint, out var active) && ReferenceEquals(active, runtime)) _v4Runtimes.Remove(fingerprint);
+            }
             connection.Close();
             throw;
         }
@@ -939,8 +1336,9 @@ public sealed class AppSession
                 foreach (var pending in _incomingDecisions.Where(kv => kv.Key.Fingerprint == fingerprint).Select(kv => kv.Value))
                     pending.TrySetCanceled();
             connection.Close();
-            await FinishConnectionAsync(fingerprint, failed, connection);
-            cancellation.Dispose();
+            try { await FinishConnectionAsync(fingerprint, failed, connection); }
+            catch (Exception ex) { AppLog.Write($"v3 finish failed: {ex.GetType().Name}"); }
+            finally { cancellation.Dispose(); }
         }
     }
 
@@ -964,10 +1362,14 @@ public sealed class AppSession
                     if (_v4IncomingWork.Remove(key, out var incomingWork)) incomingWork.Dispose();
             }
             connection.Close();
-            _v4Connections?.Remove(fingerprint, connection);
             lock (_v4Gate)
+            {
+                bool removed = _v4Connections?.Remove(fingerprint, connection) == true;
+                if (removed && (_v4Connections?.TryGet(fingerprint, out _) != true))
+                    _v4ReconnectReplacementPrimed.Remove(fingerprint);
                 if (_v4Runtimes.TryGetValue(fingerprint, out var current) && ReferenceEquals(current.Connection, connection))
                     _v4Runtimes.Remove(fingerprint);
+            }
             await FinishConnectionAsync(fingerprint, failed, connection);
             cancellation.Dispose();
         }
@@ -1023,17 +1425,27 @@ public sealed class AppSession
                 conversation.State = "未连接";
                 foreach (var item in conversation.Messages.Where(m => m.Entry.IsActive)) item.Apply(item.Entry with { State = MessageState.Failed, Error = "连接已断开。" });
             }
-            if (ReferenceEquals(_connection, connection))
+            bool removedV3 = false;
+            lock (_v3SlotGate)
             {
-                _connection = null; _connectionCts = null; ActiveFingerprint = FirstDirectV4Fingerprint();
-                Interlocked.Exchange(ref _connectionSlot, 0);
+                if (ReferenceEquals(_connection, connection))
+                {
+                    _connection = null; ActiveFingerprint = FirstDirectV4Fingerprint();
+                    removedV3 = true;
+                }
+            }
+            if (removedV3)
+            {
                 if (!failed) Publish("已断开连接");
                 Changed();
             }
             else if (connection is V4Connection v4)
             {
-                if (ReferenceEquals(_v4Connection, v4)) _v4Connection = FirstDirectV4Connection();
-                if (ActiveFingerprint == fingerprint) ActiveFingerprint = _connection?.PeerFingerprint ?? FirstDirectV4Fingerprint();
+                lock (_v4Gate)
+                {
+                    if (ReferenceEquals(_v4Connection, v4)) _v4Connection = FirstDirectV4Connection();
+                    if (ActiveFingerprint == fingerprint) ActiveFingerprint = _connection?.PeerFingerprint ?? FirstDirectV4Fingerprint();
+                }
                 if (!failed) Publish("已断开连接");
                 Changed();
             }
@@ -1043,13 +1455,13 @@ public sealed class AppSession
     public async Task DisconnectAsync(ConversationItem? conversation = null)
     {
         string? fingerprint = conversation is null ? null : ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        Task? pendingV3Accept = CancelV3PendingAccept(fingerprint);
+        var (targetsActiveV3Connection, v3SlotCompletion, v3Cancellation, v3ActiveConnection) = GetV3SlotDrain(fingerprint);
         var runners = new List<Task>();
-        if (fingerprint is null || (_connection is not null && SameFingerprint(_connection.PeerFingerprint, fingerprint)) ||
-            (_connectionSlot != 0 && _connection is null && _v4PendingByPeer.IsEmpty))
+        if (targetsActiveV3Connection)
         {
-            try { _connectionCts?.Cancel(); } catch (ObjectDisposedException) { }
-            _connection?.Close();
-            if (_runner is not null) runners.Add(_runner);
+            try { v3Cancellation?.Cancel(); } catch (ObjectDisposedException) { }
+            v3ActiveConnection?.Close();
         }
         if (fingerprint is null)
         {
@@ -1071,6 +1483,8 @@ public sealed class AppSession
             if (runtime.Runner is not null) runners.Add(runtime.Runner);
         }
         if (runners.Count > 0) await Task.WhenAll(runners);
+        if (pendingV3Accept is not null) await pendingV3Accept;
+        if (v3SlotCompletion is not null) await v3SlotCompletion;
     }
 
     public bool DecideIncomingFile(ConversationItem conversation, MessageItem item, bool accept)

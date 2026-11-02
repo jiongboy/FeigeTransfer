@@ -415,7 +415,7 @@ struct PendingGroupInvitation: Identifiable, Sendable {
 }
 
 
-struct PendingGroupLeaveRequest: Identifiable, Sendable {
+struct PendingGroupLeaveRequest: Identifiable, Codable, Sendable {
     let message: GroupControlMessage
     let peerName: String
     var id: UUID { message.eventID }

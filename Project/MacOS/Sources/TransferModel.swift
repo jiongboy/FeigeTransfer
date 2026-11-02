@@ -152,6 +152,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private var networkMonitor: NWPathMonitor?
     private let networkQueue = DispatchQueue(label: "com.feige.network-monitor")
     private var networkRefreshTask: Task<Void, Never>?
+    private var networkAvailable: Bool?
     private var started = false
     private var preparedIdentity: DeviceIdentity?
     private var identityPreparationTask: Task<DeviceIdentity, Error>?
@@ -179,11 +180,29 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private var pendingGroupTextAckWaiters: [GroupAckKey: GroupResponseSlot<GroupTextAck>] = [:]
     private var activeGroupTextSends: Set<GroupAckKey> = []
     private var pendingGroupSetups: [UUID: GroupConversation] = [:]
+    private var resolvingGroupLeavePeers: Set<String> = []
     private var pendingGroupMembershipChanges: [UUID: GroupControlMessage] = [:]
     private var acceptedGroupInvitations: [UUID: GroupControlMessage] = [:]
     private var pendingLeaveRequestsByGroup: [UUID: Set<UUID>] = [:]
+    private var pendingGroupLeaveMessagesByGroup: [UUID: [UUID: GroupControlMessage]] = [:]
+    private var completedGroupLeaveReplies: [UUID: GroupControlMessage] = [:]
+    private var sendingGroupLeaveRequests: [UUID: UUID] = [:]
+    private var sendingGroupLeaveReplies: [UUID: UUID] = [:]
+    private var archivedPendingGroupLeaveMessages: [GroupControlMessage] {
+        pendingGroupLeaveMessagesByGroup.values.flatMap { $0.values }
+            .sorted {
+                if $0.groupID != $1.groupID { return $0.groupID.uuidString < $1.groupID.uuidString }
+                return $0.eventID.uuidString < $1.eventID.uuidString
+            }
+    }
+    private var archivedCompletedGroupLeaveReplies: [GroupControlMessage] {
+        completedGroupLeaveReplies.values.sorted { $0.eventID.uuidString < $1.eventID.uuidString }
+    }
+    private var pendingGroupLeaveReconnectTasks: [String: Task<Void, Never>] = [:]
+    private var pendingGroupLeaveReconnectAttempts: [String: Int] = [:]
     private var peerTokens: [String: UUID] = [:]
     private var channelsByPeer: [String: FileConnection] = [:]
+    private var reconnectReplacementTokens: [String: UUID] = [:]
     private var readerTasksByPeer: [String: Task<Void, Never>] = [:]
     private var transportByToken: [UUID: NetworkByteStream] = [:]
     private var connectionTasksByToken: [UUID: Task<Void, Never>] = [:]
@@ -478,16 +497,34 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         networkMonitor = monitor
     }
 
-    /// Rebuilds discovery after the network settles. Established sessions, the listener port and
-    /// the consent stay untouched; later-mode and shutdown never restart the service.
+    /// Discards stale channels on network path updates, then rebuilds discovery.
+    /// Conversation history and drafts stay local; only unfinished messages are marked for retry.
     private func handleNetworkChange(available: Bool) {
-        guard available, started, settings.firstRunComplete, isIdentityReady else { return }
+        let previouslyAvailable = networkAvailable
+        networkAvailable = available
+        guard started, settings.firstRunComplete, isIdentityReady else { return }
+
+        if !available {
+            networkRefreshTask?.cancel()
+            networkRefreshTask = nil
+            if previouslyAvailable != false {
+                disconnectAll(failureReason: "网络中断，未完成的消息可重试。", preservePendingRequests: true)
+            }
+            discoveryState = "网络不可用，等待网络恢复"
+            return
+        }
+
+        // NWPathMonitor reports path changes even when the interface name stays the same.
+        if previouslyAvailable != nil {
+            disconnectAll(failureReason: "网络已变化，未完成的消息可重试。", preservePendingRequests: true)
+        }
         networkRefreshTask?.cancel()
         networkRefreshTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(750))
             guard let self, !Task.isCancelled else { return }
             self.localAddress = LANAddress.currentIPv4()
             self.refreshDiscovery()
+            self.connectEligibleGroupPeers()
             AppLogFile.write("network: discovery refreshed", in: self.supportDirectory)
         }
     }
@@ -690,6 +727,29 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                                 serviceName: device.serviceName, purpose: .group(pending.group.id), protocolVersion: preferredGroupProtocolVersion(for: device))
             }
         }
+        for request in pendingGroupLeaveRequests {
+            let peerID = request.message.targetFingerprint ?? ""
+            guard !peerID.isEmpty, channelsByPeer[peerID] == nil,
+                  let device = nearbyDevice(for: peerID, requiringV4: true),
+                  !connectingServiceNames.contains(device.serviceName), activeConnectionTokens.count < 39,
+                  groupOnlyPeerIDs.count + pendingGroupConnectionCount < 19 else { continue }
+            connectingServiceNames.insert(device.serviceName)
+            beginConnection(NetworkByteStream(endpoint: device.endpoint), role: .initiator, pendingFiles: [],
+                            serviceName: device.serviceName, purpose: .group(request.message.groupID), protocolVersion: preferredGroupProtocolVersion(for: device))
+        }
+        for (groupID, messages) in pendingGroupLeaveMessagesByGroup {
+            guard let group = groups.first(where: { $0.id == groupID }),
+                  group.ownerFingerprint != localID,
+                  messages.values.contains(where: { $0.ownerFingerprint == group.ownerFingerprint }),
+                  channelsByPeer[group.ownerFingerprint] == nil,
+                  let device = nearbyDevice(for: group.ownerFingerprint, requiringV4: true),
+                  !connectingServiceNames.contains(device.serviceName), activeConnectionTokens.count < 39,
+                  groupOnlyPeerIDs.count + pendingGroupConnectionCount < 19 else { continue }
+            connectingServiceNames.insert(device.serviceName)
+            beginConnection(NetworkByteStream(endpoint: device.endpoint), role: .initiator, pendingFiles: [],
+                            serviceName: device.serviceName, purpose: .group(groupID),
+                            protocolVersion: preferredGroupProtocolVersion(for: device))
+        }
     }
 
     private func startGroupMeshConnections(groupID: UUID, roster: [GroupConversationMember]) {
@@ -725,6 +785,12 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         }
         if pendingGroupSetups[groupID]?.members.contains(where: { $0.fingerprint == peerID }) == true { return true }
         if pendingGroupMembershipChanges[groupID]?.roster?.contains(where: { $0.fingerprint == peerID }) == true { return true }
+        if pendingGroupLeaveRequests.contains(where: {
+            $0.message.groupID == groupID && $0.message.targetFingerprint == peerID
+        }) { return true }
+        if completedGroupLeaveReplies.values.contains(where: {
+            $0.groupID == groupID && $0.targetFingerprint == peerID
+        }) { return true }
         return acceptedGroupInvitations.values.contains {
             $0.groupID == groupID && $0.roster?.contains(where: { $0.fingerprint == peerID }) == true
         }
@@ -876,20 +942,34 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             } catch {
                 guard activeConnectionTokens.contains(token) else { return }
                 finishConnectionAttempt(token)
-                let rejectedLocally = role == .responder && (error as? ConnectionError).map {
+                let wasRejected = (error as? ConnectionError).map {
                     if case .rejected = $0 { return true }; return false
                 } == true
+                let rejectedLocally = role == .responder && wasRejected
                 if !rejectedLocally && !(error is CancellationError) {
                     errorMessage = error.localizedDescription
                     shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
                 }
                 if !pendingFiles.isEmpty { canRetry = true }
                 refreshConnectionSummary()
+                if case .group(let groupID) = purpose {
+                    let hasPendingLeave = pendingGroupLeaveRequests.contains(where: { $0.message.groupID == groupID }) ||
+                        pendingGroupLeaveMessagesByGroup[groupID]?.isEmpty == false
+                    if wasRejected && hasPendingLeave {
+                        errorMessage = "群连接被拒绝，退出申请仍待处理；再次处理申请可重试连接。"
+                    } else if !wasRejected && !(error is CancellationError) {
+                        schedulePendingGroupLeaveReconnects(groupID: groupID)
+                    }
+                }
                 if rejectedLocally { connectionState = "已拒绝连接" }
             }
         }
         connectionTasksByToken[token] = task
         connectionTask = task
+    }
+
+    private func clearReconnectReplacement(peerID: String, token: UUID) {
+        if reconnectReplacementTokens[peerID] == token { reconnectReplacementTokens.removeValue(forKey: peerID) }
     }
 
     private func finishConnectionAttempt(_ token: UUID, closeTransport: Bool = true) {
@@ -977,10 +1057,16 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             }
         }
         if channelsByPeer[peerID] != nil {
-            connection.close()
-            finishConnectionAttempt(token)
-            refreshConnectionSummary()
-            return
+            let hasOtherDirectAttempt = directConnectionTokens.contains { $0 != token }
+            if case .direct = purpose, reconnectReplacementTokens[peerID] == nil, !hasOtherDirectAttempt {
+                reconnectReplacementTokens[peerID] = token
+                disconnect(peerID: peerID, failureReason: "网络连接已更换，未完成的消息可重试。", preservePendingRequests: true)
+            } else {
+                connection.close()
+                finishConnectionAttempt(token)
+                refreshConnectionSummary()
+                return
+            }
         }
         if case .direct = purpose {
             let reservedDirectCount = directPeerIDs.count + directConnectionTokens.count
@@ -988,6 +1074,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 guard let group = groups.first(where: { $0.members.contains { $0.fingerprint == peerID } }),
                       groupOnlyPeerIDs.count < 19 else {
                     connection.close()
+                    clearReconnectReplacement(peerID: peerID, token: token)
                     finishConnectionAttempt(token)
                     refreshConnectionSummary()
                     return
@@ -999,6 +1086,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             guard isKnownGroupMember(peerID, groupID: groupID),
                   groupOnlyPeerIDs.contains(peerID) || groupOnlyPeerIDs.count < 19 else {
                 connection.close()
+                clearReconnectReplacement(peerID: peerID, token: token)
                 finishConnectionAttempt(token)
                 refreshConnectionSummary()
                 return
@@ -1066,13 +1154,17 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     errorMessage = error.localizedDescription
                     shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
                 }
-                disconnect(peerID: peerID, failureReason: error.localizedDescription)
+                disconnect(peerID: peerID, failureReason: error.localizedDescription,
+                           preservePendingRequests: true)
+                schedulePendingGroupLeaveReconnect(peerID: peerID)
                 if interrupted { transferStatus = "连接中断" }
             }
         }
         readerTasksByPeer[peerID] = reader
         readerTask = reader
         refreshConnectionSummary()
+        resendPendingGroupLeaveMessages(to: peerID, generation: token)
+        resendPendingGroupLeaveReplies(to: peerID, generation: token)
     }
 
     /// Shows an incoming file as "等待你确认接收" and suspends until the user decides.
@@ -1364,7 +1456,9 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     }
                     retryURLsByPeer[peerID] = Array(urls.dropFirst(index))
                     if connectedPeerID == peerID { canRetry = true; retryURLs = retryURLsByPeer[peerID] ?? [] }
-                    disconnect(peerID: peerID, failureReason: error.localizedDescription)
+                    disconnect(peerID: peerID, failureReason: error.localizedDescription,
+                               preservePendingRequests: true)
+                    schedulePendingGroupLeaveReconnect(peerID: peerID)
                     if !(error is CancellationError) {
                         errorMessage = error.localizedDescription
                         shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
@@ -1427,7 +1521,14 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     func cancelTransfer() {
         if isSending { transferStatus = "发送已取消"; canRetry = !retryURLs.isEmpty }
         if isReceivingFile { receiveStatus = "接收已取消，未完成的文件已清理" }
-        disconnect()
+        if channelsByPeer[connectedPeerID] != nil {
+            disconnect(peerID: connectedPeerID, preservePendingRequests: true)
+            schedulePendingGroupLeaveReconnect(peerID: connectedPeerID)
+            schedulePendingGroupLeaveReconnects()
+        } else {
+            cancelConnectionAttempts()
+            schedulePendingGroupLeaveReconnects()
+        }
     }
 
     func disconnect(failureReason: String? = nil) {
@@ -1439,8 +1540,9 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func disconnect(peerID: String, failureReason: String? = nil) {
+    func disconnect(peerID: String, failureReason: String? = nil, preservePendingRequests: Bool = false) {
         guard let token = peerTokens.removeValue(forKey: peerID) else { return }
+        if reconnectReplacementTokens[peerID] == token { reconnectReplacementTokens.removeValue(forKey: peerID) }
         activeConnectionTokens.remove(token)
         connectionTasksByToken.removeValue(forKey: token)?.cancel()
         transportByToken.removeValue(forKey: token)?.close()
@@ -1456,11 +1558,15 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             slot.resolve(.failure(ConnectionError.closed))
             pendingGroupTextAckWaiters.removeValue(forKey: key)
         }
-        pendingGroupInvitations.removeAll(where: { $0.peerFingerprint == peerID })
-        pendingGroupLeaveRequests.removeAll(where: { $0.message.targetFingerprint == peerID })
-        for group in groups where group.ownerFingerprint == peerID {
-            pendingLeaveRequestsByGroup.removeValue(forKey: group.id)
-            pendingGroupMembershipChanges.removeValue(forKey: group.id)
+        if !preservePendingRequests {
+            pendingGroupInvitations.removeAll(where: { $0.peerFingerprint == peerID })
+            pendingGroupLeaveRequests.removeAll(where: { $0.message.targetFingerprint == peerID })
+            clearPendingGroupLeaveReconnect(peerID: peerID)
+            for group in groups where group.ownerFingerprint == peerID {
+                pendingLeaveRequestsByGroup.removeValue(forKey: group.id)
+                pendingGroupLeaveMessagesByGroup.removeValue(forKey: group.id)
+                pendingGroupMembershipChanges.removeValue(forKey: group.id)
+            }
         }
         directPeerIDs.remove(peerID)
         for groupID in Array(groupPeerIDs.keys) {
@@ -1484,7 +1590,9 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             groupFileDecisionContinuations.removeValue(forKey: key)
             continuation.resume(returning: false)
         }
-        acceptedGroupInvitations = acceptedGroupInvitations.filter { $0.value.ownerFingerprint != peerID }
+        if !preservePendingRequests {
+            acceptedGroupInvitations = acceptedGroupInvitations.filter { $0.value.ownerFingerprint != peerID }
+        }
         saveMessages()
         if connectedPeerID == peerID {
             channel = nil
@@ -1514,7 +1622,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         pendingConnectionPeerName = nil
     }
 
-    private func disconnectAll(failureReason: String? = nil) {
+    private func disconnectAll(failureReason: String? = nil, preservePendingRequests: Bool = false) {
         cancelConnectionAttempts()
         for (peerID, token) in peerTokens {
             activeConnectionTokens.remove(token)
@@ -1522,11 +1630,12 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             channelsByPeer.removeValue(forKey: peerID)?.close()
         }
         peerTokens.removeAll()
+        reconnectReplacementTokens.removeAll()
         for slot in pendingGroupControlWaiters.values { slot.resolve(.failure(ConnectionError.closed)) }
         for slot in pendingGroupTextAckWaiters.values { slot.resolve(.failure(ConnectionError.closed)) }
         pendingGroupControlWaiters.removeAll()
         pendingGroupTextAckWaiters.removeAll()
-        pendingGroupInvitations.removeAll()
+        if !preservePendingRequests { pendingGroupInvitations.removeAll() }
         channelsByPeer.removeAll()
         directPeerIDs.removeAll()
         directConnectionTokens.removeAll()
@@ -1781,9 +1890,26 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     func requestLeaveGroup(_ groupID: UUID) {
         guard let group = groups.first(where: { $0.id == groupID }),
               let identity = preparedIdentity,
-              group.ownerFingerprint != identity.fingerprint,
-              pendingLeaveRequestsByGroup[groupID]?.isEmpty != false,
-              let ownerChannel = channelsByPeer[group.ownerFingerprint], ownerChannel.protocolVersion >= 4 else {
+              group.ownerFingerprint != identity.fingerprint else {
+            errorMessage = "只有群成员可以申请退出群聊。"
+            return
+        }
+        if let pending = pendingGroupLeaveMessagesByGroup[groupID]?.values.first {
+            guard pending.ownerFingerprint == group.ownerFingerprint,
+                  pending.targetFingerprint == identity.fingerprint else {
+                errorMessage = "群主或成员身份已变化，退出申请仍待处理。"
+                return
+            }
+            guard let ownerChannel = channelsByPeer[group.ownerFingerprint], ownerChannel.protocolVersion >= 4 else {
+                errorMessage = "退出申请仍待处理，正在尝试重新连接群主。"
+                connectEligibleGroupPeers()
+                schedulePendingGroupLeaveReconnect(peerID: group.ownerFingerprint)
+                return
+            }
+            sendGroupLeaveRequest(pending)
+            return
+        }
+        guard let ownerChannel = channelsByPeer[group.ownerFingerprint], ownerChannel.protocolVersion >= 4 else {
             errorMessage = "需要连接群主后才能申请退出群聊。"
             return
         }
@@ -1792,61 +1918,288 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 ownerFingerprint: group.ownerFingerprint, epoch: group.revision,
                 targetFingerprint: identity.fingerprint)
             pendingLeaveRequestsByGroup[groupID, default: []].insert(message.eventID)
-            Task { [weak self] in
-                let payload = try? GroupWireJSON.encode(message)
-                guard let payload else { return }
-                do {
-                    var ownerNotified = false
-                    for member in group.members where member.fingerprint != identity.fingerprint {
-                        guard let channel = self?.channelsByPeer[member.fingerprint], channel.protocolVersion >= 4 else { continue }
-                        do {
-                            try await channel.sendGroupFrame(.groupControl, payload: payload)
-                            if member.fingerprint == group.ownerFingerprint { ownerNotified = true }
-                        } catch {
-                            if member.fingerprint == group.ownerFingerprint { throw error }
-                        }
-                    }
-                    guard ownerNotified else { throw ConnectionError.closed }
-                } catch {
-                    self?.pendingLeaveRequestsByGroup[groupID]?.remove(message.eventID)
-                    self?.errorMessage = "发送退出申请失败：\(error.localizedDescription)"
+            pendingGroupLeaveMessagesByGroup[groupID, default: [:]][message.eventID] = message
+            do { try persistGroupState() }
+            catch {
+                pendingLeaveRequestsByGroup[groupID]?.remove(message.eventID)
+                pendingGroupLeaveMessagesByGroup[groupID]?.removeValue(forKey: message.eventID)
+                if pendingLeaveRequestsByGroup[groupID]?.isEmpty == true {
+                    pendingLeaveRequestsByGroup.removeValue(forKey: groupID)
                 }
+                if pendingGroupLeaveMessagesByGroup[groupID]?.isEmpty == true {
+                    pendingGroupLeaveMessagesByGroup.removeValue(forKey: groupID)
+                }
+                errorMessage = "保存退出申请失败：\(error.localizedDescription)"
+                return
             }
+            sendGroupLeaveRequest(message)
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func resolveGroupLeaveRequest(_ eventID: UUID, accepted: Bool) {
-        guard let request = pendingGroupLeaveRequests.first(where: { $0.id == eventID }) else { return }
-        pendingGroupLeaveRequests.removeAll { $0.id == eventID }
+    private func beginGroupLeaveSend(eventID: UUID, generation token: UUID) -> Bool {
+        guard sendingGroupLeaveRequests[eventID] != token else { return false }
+        sendingGroupLeaveRequests[eventID] = token
+        return true
+    }
+
+    private func finishGroupLeaveSend(eventID: UUID, generation token: UUID) {
+        if sendingGroupLeaveRequests[eventID] == token {
+            sendingGroupLeaveRequests.removeValue(forKey: eventID)
+        }
+    }
+
+    private func isCurrentConnection(_ peerID: String, generation token: UUID) -> Bool {
+        activeConnectionTokens.contains(token) && peerTokens[peerID] == token
+    }
+
+    private func sendGroupLeaveRequest(_ message: GroupControlMessage) {
+        guard let channel = channelsByPeer[message.ownerFingerprint], channel.protocolVersion >= 4,
+              let token = peerTokens[message.ownerFingerprint], isCurrentConnection(message.ownerFingerprint, generation: token) else {
+            errorMessage = "退出申请仍待处理，正在尝试重新连接群主。"
+            schedulePendingGroupLeaveReconnect(peerID: message.ownerFingerprint)
+            return
+        }
+        guard beginGroupLeaveSend(eventID: message.eventID, generation: token) else { return }
         Task { [weak self] in
             guard let self else { return }
+            defer { self.finishGroupLeaveSend(eventID: message.eventID, generation: token) }
+            guard self.isCurrentConnection(message.ownerFingerprint, generation: token) else { return }
+            do {
+                try await channel.sendGroupFrame(.groupControl, payload: GroupWireJSON.encode(message))
+            } catch {
+                guard self.isCurrentConnection(message.ownerFingerprint, generation: token) else { return }
+                self.errorMessage = "发送退出申请失败，申请仍待处理：\(error.localizedDescription)"
+                self.disconnect(peerID: message.ownerFingerprint, failureReason: error.localizedDescription,
+                                preservePendingRequests: true)
+                self.schedulePendingGroupLeaveReconnect(peerID: message.ownerFingerprint)
+            }
+        }
+    }
+
+    func resolveGroupLeaveRequest(_ eventID: UUID, accepted: Bool) {
+        if let completedReply = completedGroupLeaveReplies[eventID] {
+            let leavingPeerID = completedReply.targetFingerprint ?? ""
+            if let token = peerTokens[leavingPeerID] {
+                resendPendingGroupLeaveReplies(to: leavingPeerID, generation: token)
+            } else {
+                errorMessage = "退出回执已保存，正在尝试重连成员。"
+                connectEligibleGroupPeers()
+                schedulePendingGroupLeaveReconnect(peerID: leavingPeerID)
+            }
+            return
+        }
+        guard let request = pendingGroupLeaveRequests.first(where: { $0.id == eventID }) else { return }
+        let leavingPeerID = request.message.targetFingerprint ?? ""
+        guard channelsByPeer[leavingPeerID] != nil else {
+            errorMessage = "网络未连接，正在尝试重连；连接恢复后再次处理退出申请。"
+            connectEligibleGroupPeers()
+            return
+        }
+        guard resolvingGroupLeavePeers.insert(leavingPeerID).inserted else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.resolvingGroupLeavePeers.remove(leavingPeerID) }
+            guard self.channelsByPeer[leavingPeerID] != nil,
+                  let group = self.groups.first(where: { $0.id == request.message.groupID }) else {
+                self.errorMessage = "网络或群组状态已变化，成员退出申请仍待处理。"
+                return
+            }
+            let memberStillInGroup = group.members.contains { $0.fingerprint == leavingPeerID }
+            let removalPending = self.groupRosterRemovesPeer(leavingPeerID, groupID: group.id)
+            if accepted && removalPending {
+                self.errorMessage = "成员移除事务仍在提交，完成后再次处理退出申请回执。"
+                return
+            }
+            if !accepted && (!memberStillInGroup || removalPending) {
+                self.errorMessage = "成员移除已在处理中或已完成，不能拒绝此退出申请。"
+                return
+            }
             var finalAccepted = accepted
-            if accepted {
+            if accepted && memberStillInGroup && !removalPending {
                 do {
-                    guard let group = self.groups.first(where: { $0.id == request.message.groupID }),
-                          let memberID = request.message.targetFingerprint else {
-                        throw GroupConversationError.invalidControlMessage
-                    }
                     try await self.updateGroupRoster(groupID: group.id,
-                        members: group.members.filter { $0.fingerprint != memberID })
+                        members: group.members.filter { $0.fingerprint != leavingPeerID })
+                    if self.groupRosterRemovesPeer(leavingPeerID, groupID: group.id) {
+                        self.errorMessage = "成员移除事务仍在提交，完成后再次处理退出申请回执。"
+                        return
+                    }
                 } catch {
+                    if self.groupRosterRemovesPeer(leavingPeerID, groupID: group.id) {
+                        self.errorMessage = "成员移除事务已保存，等待设备恢复后提交。"
+                        return
+                    }
                     finalAccepted = false
                     self.errorMessage = "处理成员退出申请失败：\(error.localizedDescription)"
                 }
             }
-            let leavingPeerID = request.message.targetFingerprint ?? ""
             guard let identity = self.preparedIdentity,
-                  let channel = self.channelsByPeer[leavingPeerID],
                   let reply = try? GroupControlMessage(kind: .leaveReply, eventID: eventID,
                       groupID: request.message.groupID, ownerFingerprint: identity.fingerprint,
                       epoch: request.message.epoch, targetFingerprint: leavingPeerID,
-                      accepted: finalAccepted),
-                  let payload = try? GroupWireJSON.encode(reply) else { return }
-            do { try await channel.sendGroupFrame(.groupControl, payload: payload) }
-            catch { self.errorMessage = "回复退出申请失败：\(error.localizedDescription)" }
-            if finalAccepted, self.pendingGroupCommits[request.message.groupID] == nil,
-               !self.directPeerIDs.contains(leavingPeerID) {
-                self.disconnect(peerID: leavingPeerID)
+                      accepted: finalAccepted) else { return }
+            do { try self.persistCompletedGroupLeaveReply(reply) }
+            catch {
+                self.errorMessage = "保存退出回执失败：\(error.localizedDescription)"
+                return
+            }
+            return
+        }
+    }
+
+    private func persistCompletedGroupLeaveReply(_ reply: GroupControlMessage) throws {
+        let previousReply = completedGroupLeaveReplies[reply.eventID]
+        completedGroupLeaveReplies[reply.eventID] = reply
+        do { try persistGroupState() }
+        catch {
+            if let previousReply { completedGroupLeaveReplies[reply.eventID] = previousReply }
+            else { completedGroupLeaveReplies.removeValue(forKey: reply.eventID) }
+            throw error
+        }
+        guard let peerID = reply.targetFingerprint,
+              let token = peerTokens[peerID], channelsByPeer[peerID] != nil else {
+            errorMessage = "退出回执已保存，正在尝试重连成员。"
+            connectEligibleGroupPeers()
+            if let peerID = reply.targetFingerprint { schedulePendingGroupLeaveReconnect(peerID: peerID) }
+            return
+        }
+        resendPendingGroupLeaveReplies(to: peerID, generation: token)
+    }
+
+    private func memberIsInGroup(_ peerID: String, groupID: UUID) -> Bool {
+        groups.first(where: { $0.id == groupID })?.members.contains(where: { $0.fingerprint == peerID }) == true
+    }
+
+    private func groupRosterRemovesPeer(_ peerID: String, groupID: UUID) -> Bool {
+        let pendingGroups = [
+            pendingGroupSetups[groupID],
+            pendingGroupPreparations[groupID]?.group,
+            pendingGroupCommits[groupID]?.group
+        ].compactMap { $0 }
+        return pendingGroups.contains { pending in
+            !pending.members.contains(where: { $0.fingerprint == peerID })
+        }
+    }
+
+    private func hasPendingGroupLeaveExchange(with peerID: String) -> Bool {
+        pendingGroupLeaveRequests.contains(where: { $0.message.targetFingerprint == peerID }) ||
+            pendingGroupLeaveMessagesByGroup.values.contains(where: { messages in
+                messages.values.contains(where: { $0.ownerFingerprint == peerID })
+            })
+    }
+
+    private func schedulePendingGroupLeaveReconnect(peerID: String) {
+        guard channelsByPeer[peerID] == nil, hasPendingGroupLeaveExchange(with: peerID),
+              pendingGroupLeaveReconnectTasks[peerID] == nil else { return }
+        let attempt = pendingGroupLeaveReconnectAttempts[peerID] ?? 0
+        let delaySeconds = min(1 << min(attempt, 6), 60)
+        pendingGroupLeaveReconnectAttempts[peerID] = min(attempt + 1, 6)
+        pendingGroupLeaveReconnectTasks[peerID] = Task { [weak self] in
+            defer { self?.pendingGroupLeaveReconnectTasks.removeValue(forKey: peerID) }
+            do { try await Task.sleep(for: .seconds(delaySeconds)) } catch { return }
+            guard let self,
+                  self.channelsByPeer[peerID] == nil,
+                  self.hasPendingGroupLeaveExchange(with: peerID) else { return }
+            self.connectEligibleGroupPeers()
+        }
+    }
+
+    private func schedulePendingGroupLeaveReconnects() {
+        let peerIDs = pendingGroupLeaveRequests.compactMap { $0.message.targetFingerprint } +
+            pendingGroupLeaveMessagesByGroup.values.flatMap { $0.values.map(\.ownerFingerprint) }
+        for peerID in Set(peerIDs) { schedulePendingGroupLeaveReconnect(peerID: peerID) }
+    }
+
+    private func schedulePendingGroupLeaveReconnects(groupID: UUID) {
+        for request in pendingGroupLeaveRequests where request.message.groupID == groupID {
+            if let peerID = request.message.targetFingerprint {
+                schedulePendingGroupLeaveReconnect(peerID: peerID)
+            }
+        }
+        if let messages = pendingGroupLeaveMessagesByGroup[groupID] {
+            for message in messages.values {
+                schedulePendingGroupLeaveReconnect(peerID: message.ownerFingerprint)
+            }
+        }
+    }
+
+    private func clearPendingGroupLeaveReconnect(peerID: String) {
+        pendingGroupLeaveReconnectTasks.removeValue(forKey: peerID)?.cancel()
+        pendingGroupLeaveReconnectAttempts.removeValue(forKey: peerID)
+    }
+
+    private func resendPendingGroupLeaveMessages(to peerID: String, generation token: UUID) {
+        let messages = pendingGroupLeaveMessagesByGroup.values.flatMap { $0.values }
+            .filter { $0.ownerFingerprint == peerID }
+            .sorted { $0.eventID.uuidString < $1.eventID.uuidString }
+        guard !messages.isEmpty, let channel = channelsByPeer[peerID], channel.protocolVersion >= 4 else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            for message in messages {
+                guard self.isCurrentConnection(peerID, generation: token) else { return }
+                guard self.beginGroupLeaveSend(eventID: message.eventID, generation: token) else { continue }
+                defer { self.finishGroupLeaveSend(eventID: message.eventID, generation: token) }
+                do {
+                    try await channel.sendGroupFrame(.groupControl, payload: GroupWireJSON.encode(message))
+                } catch {
+                    guard self.isCurrentConnection(peerID, generation: token) else { return }
+                    self.disconnect(peerID: peerID, failureReason: error.localizedDescription,
+                                    preservePendingRequests: true)
+                    self.schedulePendingGroupLeaveReconnect(peerID: peerID)
+                    return
+                }
+            }
+        }
+    }
+
+    private func resendPendingGroupLeaveReplies(to peerID: String, generation token: UUID) {
+        let replies = completedGroupLeaveReplies.values
+            .filter { $0.targetFingerprint == peerID }
+            .sorted { $0.eventID.uuidString < $1.eventID.uuidString }
+        guard !replies.isEmpty, let channel = channelsByPeer[peerID], channel.protocolVersion >= 4 else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            for reply in replies {
+                guard self.isCurrentConnection(peerID, generation: token) else { return }
+                guard self.sendingGroupLeaveReplies[reply.eventID] != token else { continue }
+                self.sendingGroupLeaveReplies[reply.eventID] = token
+                defer {
+                    if self.sendingGroupLeaveReplies[reply.eventID] == token {
+                        self.sendingGroupLeaveReplies.removeValue(forKey: reply.eventID)
+                    }
+                }
+                do {
+                    try await channel.sendGroupFrame(.groupControl, payload: GroupWireJSON.encode(reply))
+                } catch {
+                    guard self.isCurrentConnection(peerID, generation: token) else { return }
+                    self.errorMessage = "重发退出回执失败：\(error.localizedDescription)"
+                    self.disconnect(peerID: peerID, failureReason: error.localizedDescription,
+                                    preservePendingRequests: true)
+                    self.schedulePendingGroupLeaveReconnect(peerID: peerID)
+                    return
+                }
+                guard self.isCurrentConnection(peerID, generation: token) else { return }
+                self.finalizeGroupLeaveReply(reply)
+            }
+        }
+    }
+
+    private func finalizeGroupLeaveReply(_ reply: GroupControlMessage) {
+        let leavingPeerID = reply.targetFingerprint ?? ""
+        pendingGroupLeaveRequests.removeAll { $0.id == reply.eventID }
+        saveMessages()
+        if !hasPendingGroupLeaveExchange(with: leavingPeerID) {
+            clearPendingGroupLeaveReconnect(peerID: leavingPeerID)
+        }
+        if reply.accepted == true,
+           !memberIsInGroup(leavingPeerID, groupID: reply.groupID),
+           !groupRosterRemovesPeer(leavingPeerID, groupID: reply.groupID) {
+            groupPeerIDs[reply.groupID]?.remove(leavingPeerID)
+            if groupPeerIDs[reply.groupID]?.isEmpty == true {
+                groupPeerIDs.removeValue(forKey: reply.groupID)
+            }
+            if !directPeerIDs.contains(leavingPeerID),
+               !groupPeerIDs.values.contains(where: { $0.contains(leavingPeerID) }) {
+                disconnect(peerID: leavingPeerID)
             }
         }
     }
@@ -1861,8 +2214,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
               !activeGroupTextSends.contains(where: { $0.groupID == groupID }),
               !activeGroupFileSends.contains(where: { $0.groupID == groupID }),
               !groupFileQueues.values.contains(where: { queue in queue.contains { $0.envelope.groupID == groupID } }) else {
-            throw GroupConversationError.invalidControlMessage
-        }
+             throw GroupConversationError.invalidControlMessage
+         }
         let proposed = try GroupConversation(id: current.id, name: current.name,
             ownerFingerprint: newOwnerFingerprint ?? current.ownerFingerprint, revision: current.revision + 1,
             members: members,
@@ -1912,7 +2265,12 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     func acceptGroupInvitation(_ invitationID: UUID, accepted: Bool) {
         guard let index = pendingGroupInvitations.firstIndex(where: { $0.id == invitationID }) else { return }
-        let invitation = pendingGroupInvitations.remove(at: index)
+        let invitation = pendingGroupInvitations[index]
+        guard channelsByPeer[invitation.peerFingerprint] != nil else {
+            errorMessage = "网络未连接，重新连接后可处理群邀请。"
+            return
+        }
+        pendingGroupInvitations.remove(at: index)
         var finalAccepted = accepted
         if accepted {
             acceptedGroupInvitations[invitationID] = invitation.message
@@ -1924,7 +2282,20 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             }
         }
         Task { [weak self] in
-            guard let self, let channel = self.channelsByPeer[invitation.peerFingerprint] else { return }
+            guard let self else { return }
+            let restoreInvitation = {
+                // A saved acceptance is final; do not expose it for a later rejection.
+                guard !finalAccepted,
+                      !self.pendingGroupInvitations.contains(where: { $0.id == invitation.id }) else { return }
+                self.pendingGroupInvitations.append(invitation)
+            }
+            guard let channel = self.channelsByPeer[invitation.peerFingerprint] else {
+                restoreInvitation()
+                self.errorMessage = finalAccepted
+                    ? "已记录接受决定，等待邀请方重试时自动回复。"
+                    : "网络未连接，群邀请仍待处理。"
+                return
+            }
             guard let identity = self.preparedIdentity,
                   let reply = try? GroupControlMessage(kind: .inviteReply, eventID: invitation.message.eventID,
                                                        groupID: invitation.message.groupID,
@@ -1932,9 +2303,18 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                                                        epoch: invitation.message.epoch,
                                                        targetFingerprint: identity.fingerprint,
                                                        accepted: finalAccepted),
-                  let payload = try? GroupWireJSON.encode(reply) else { return }
+                  let payload = try? GroupWireJSON.encode(reply) else {
+                restoreInvitation()
+                if finalAccepted { self.errorMessage = "已记录接受决定，等待邀请方重试时自动回复。" }
+                return
+            }
             do { try await channel.sendGroupFrame(.groupControl, payload: payload) }
-            catch { self.errorMessage = error.localizedDescription }
+            catch {
+                restoreInvitation()
+                self.errorMessage = finalAccepted
+                    ? "已记录接受决定，等待邀请方重试时自动回复。"
+                    : error.localizedDescription
+            }
         }
     }
 
@@ -2287,9 +2667,13 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 throw error
             }
             let remainingIDs = localRemainsInGroup ? Set(pending.group.members.map(\.fingerprint)) : Set<String>()
+            // Keep a departing peer connected until its leave reply is delivered.
             for member in previousMembers where !remainingIDs.contains(member.fingerprint) &&
                 !directPeerIDs.contains(member.fingerprint) &&
-                !groupPeerIDs.values.contains(where: { $0.contains(member.fingerprint) }) {
+                !groupPeerIDs.values.contains(where: { $0.contains(member.fingerprint) }) &&
+                !pendingGroupLeaveRequests.contains(where: {
+                    $0.message.groupID == groupID && $0.message.targetFingerprint == member.fingerprint
+                }) {
                 disconnect(peerID: member.fingerprint)
             }
             connectEligibleGroupPeers()
@@ -2487,27 +2871,93 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 throw GroupConversationError.invalidControlMessage
             }
         case .leave:
-            guard message.targetFingerprint == peerID,
-                  let group = groups.first(where: { $0.id == message.groupID }),
-                  group.ownerFingerprint == message.ownerFingerprint, group.revision == message.epoch,
+            guard message.targetFingerprint == peerID else { throw GroupConversationError.invalidControlMessage }
+            if let completedReply = completedGroupLeaveReplies[message.eventID] {
+                guard completedReply.groupID == message.groupID,
+                      completedReply.ownerFingerprint == message.ownerFingerprint,
+                      completedReply.epoch == message.epoch,
+                      completedReply.targetFingerprint == peerID else {
+                    throw GroupConversationError.invalidControlMessage
+                }
+                if let token = peerTokens[peerID] {
+                    resendPendingGroupLeaveReplies(to: peerID, generation: token)
+                }
+                return
+            }
+            guard let group = groups.first(where: { $0.id == message.groupID }),
+                  group.ownerFingerprint == message.ownerFingerprint else {
+                throw GroupConversationError.invalidControlMessage
+            }
+            if let existing = pendingGroupLeaveRequests.first(where: { $0.id == message.eventID }) {
+                guard existing.message == message else { throw GroupConversationError.invalidControlMessage }
+                return
+            }
+            if group.ownerFingerprint == local.fingerprint,
+               !group.members.contains(where: { $0.fingerprint == peerID }), group.revision > message.epoch {
+                let reply = try GroupControlMessage(kind: .leaveReply, eventID: message.eventID,
+                    groupID: message.groupID, ownerFingerprint: local.fingerprint, epoch: message.epoch,
+                    targetFingerprint: peerID, accepted: true)
+                try persistCompletedGroupLeaveReply(reply)
+                return
+            }
+            guard group.revision >= message.epoch,
                   group.members.contains(where: { $0.fingerprint == peerID }) else {
                 throw GroupConversationError.invalidControlMessage
             }
             if group.ownerFingerprint == local.fingerprint {
                 guard message.ownerFingerprint == local.fingerprint else { throw GroupConversationError.invalidControlMessage }
-                if !pendingGroupLeaveRequests.contains(where: { $0.id == message.eventID }) {
-                    pendingGroupLeaveRequests.append(PendingGroupLeaveRequest(message: message, peerName: peer))
+                pendingGroupLeaveRequests.append(PendingGroupLeaveRequest(message: message, peerName: peer))
+                do { try persistGroupState() }
+                catch {
+                    pendingGroupLeaveRequests.removeAll { $0.id == message.eventID }
+                    throw error
                 }
             }
         case .leaveReply:
-            guard message.ownerFingerprint == peerID, message.targetFingerprint == local.fingerprint,
-                  let group = groups.first(where: { $0.id == message.groupID }),
-                  group.ownerFingerprint == peerID,
-                  pendingLeaveRequestsByGroup[message.groupID]?.contains(message.eventID) == true else {
+            guard message.ownerFingerprint == peerID, message.targetFingerprint == local.fingerprint else {
                 throw GroupConversationError.invalidControlMessage
             }
+            guard pendingLeaveRequestsByGroup[message.groupID]?.contains(message.eventID) == true else { return }
+            guard let group = groups.first(where: { $0.id == message.groupID }),
+                  group.ownerFingerprint == peerID else {
+                throw GroupConversationError.invalidControlMessage
+            }
+            if let request = pendingGroupLeaveMessagesByGroup[message.groupID]?[message.eventID] {
+                guard request.ownerFingerprint == message.ownerFingerprint,
+                      request.targetFingerprint == message.targetFingerprint,
+                      request.epoch == message.epoch else { throw GroupConversationError.invalidControlMessage }
+            }
+            let previousIDs = pendingLeaveRequestsByGroup[message.groupID]
+            let previousMessage = pendingGroupLeaveMessagesByGroup[message.groupID]?.removeValue(forKey: message.eventID)
             pendingLeaveRequestsByGroup[message.groupID]?.remove(message.eventID)
+            if pendingLeaveRequestsByGroup[message.groupID]?.isEmpty == true {
+                pendingLeaveRequestsByGroup.removeValue(forKey: message.groupID)
+            }
+            if pendingGroupLeaveMessagesByGroup[message.groupID]?.isEmpty == true {
+                pendingGroupLeaveMessagesByGroup.removeValue(forKey: message.groupID)
+            }
+            do { try persistGroupState() }
+            catch {
+                pendingLeaveRequestsByGroup[message.groupID] = previousIDs
+                if let previousMessage {
+                    pendingGroupLeaveMessagesByGroup[message.groupID, default: [:]][message.eventID] = previousMessage
+                }
+                throw error
+            }
+            let hasPendingLeaveRequest = pendingLeaveRequestsByGroup[message.groupID]?.isEmpty == false
+            if !hasPendingGroupLeaveExchange(with: peerID) { clearPendingGroupLeaveReconnect(peerID: peerID) }
             if message.accepted != true { errorMessage = "群主暂未批准退出申请。" }
+            if message.accepted == true, !hasPendingLeaveRequest,
+               !group.members.contains(where: { $0.fingerprint == local.fingerprint }) {
+                groupPeerIDs[message.groupID]?.remove(peerID)
+                if groupPeerIDs[message.groupID]?.isEmpty == true {
+                    groupPeerIDs.removeValue(forKey: message.groupID)
+                }
+                if !directPeerIDs.contains(peerID),
+                   !groupPeerIDs.values.contains(where: { $0.contains(peerID) }) {
+                    disconnect(peerID: peerID, preservePendingRequests: true)
+                }
+            }
         case .membershipPrepare:
             guard message.ownerFingerprint == peerID, message.targetFingerprint == local.fingerprint,
                   let roster = message.roster, let name = message.name else {
@@ -2654,7 +3104,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 groupID: message.groupID, ownerFingerprint: message.ownerFingerprint,
                 epoch: message.epoch, targetFingerprint: local.fingerprint, accepted: true)
             try await channelsByPeer[peerID]?.sendGroupFrame(.groupControl, payload: GroupWireJSON.encode(reply))
-            if !roster.contains(where: { $0.fingerprint == local.fingerprint }) {
+            if !roster.contains(where: { $0.fingerprint == local.fingerprint }),
+               pendingLeaveRequestsByGroup[message.groupID]?.isEmpty != false {
                 let staleGroupPeers = channelsByPeer.keys.filter { peer in
                     !directPeerIDs.contains(peer) && !groupPeerIDs.values.contains(where: { $0.contains(peer) })
                 }
@@ -2749,7 +3200,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                                            pendingGroupMembershipChanges: pendingGroupMembershipChanges,
                                            acceptedGroupInvitations: acceptedGroupInvitations,
                                             pendingGroupAborts: pendingGroupAborts.values.sorted { $0.group.id.uuidString < $1.group.id.uuidString },
-                                            groupAbortTombstones: groupAbortTombstones.values.sorted { $0.abort.eventID.uuidString < $1.abort.eventID.uuidString })
+                                            groupAbortTombstones: groupAbortTombstones.values.sorted { $0.abort.eventID.uuidString < $1.abort.eventID.uuidString },
+                                             pendingGroupLeaveRequests: pendingGroupLeaveRequests,
+                                             pendingGroupLeaveMessages: archivedPendingGroupLeaveMessages,
+                                             completedGroupLeaveReplies: archivedCompletedGroupLeaveReplies)
         try persist(archive, to: messagesURL)
     }
 
@@ -2791,7 +3245,9 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             } catch {
                 guard activeConnectionTokens.contains(token) else { return }
                 updateMessage(message.id, status: .failed, failureReason: error.localizedDescription)
-                disconnect(peerID: peerID, failureReason: error.localizedDescription)
+                disconnect(peerID: peerID, failureReason: error.localizedDescription,
+                           preservePendingRequests: true)
+                schedulePendingGroupLeaveReconnect(peerID: peerID)
                 if !(error is CancellationError) {
                     errorMessage = error.localizedDescription
                     shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
@@ -2841,7 +3297,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                                            pendingGroupMembershipChanges: pendingGroupMembershipChanges,
                                            acceptedGroupInvitations: acceptedGroupInvitations,
                                             pendingGroupAborts: pendingGroupAborts.values.sorted { $0.group.id.uuidString < $1.group.id.uuidString },
-                                            groupAbortTombstones: groupAbortTombstones.values.sorted { $0.abort.eventID.uuidString < $1.abort.eventID.uuidString })
+                                            groupAbortTombstones: groupAbortTombstones.values.sorted { $0.abort.eventID.uuidString < $1.abort.eventID.uuidString },
+                                             pendingGroupLeaveRequests: pendingGroupLeaveRequests,
+                                             pendingGroupLeaveMessages: archivedPendingGroupLeaveMessages,
+                                             completedGroupLeaveReplies: archivedCompletedGroupLeaveReplies)
             try persist(archive, to: messagesURL)
             if messages != updated { messages = updated }
         } catch { errorMessage = "保存会话记录失败：\(error.localizedDescription)" }
@@ -2868,6 +3327,16 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 groupFileLocations = archive.groupFileLocations
                 pendingGroupMembershipChanges = archive.pendingGroupMembershipChanges
                 acceptedGroupInvitations = archive.acceptedGroupInvitations
+                completedGroupLeaveReplies = Dictionary(uniqueKeysWithValues:
+                    archive.completedGroupLeaveReplies.map { ($0.eventID, $0) })
+                let completedLeaveIDs = Set(completedGroupLeaveReplies.keys)
+                pendingGroupLeaveRequests = archive.pendingGroupLeaveRequests.filter {
+                    !completedLeaveIDs.contains($0.id)
+                }
+                for message in archive.pendingGroupLeaveMessages {
+                    pendingGroupLeaveMessagesByGroup[message.groupID, default: [:]][message.eventID] = message
+                    pendingLeaveRequestsByGroup[message.groupID, default: []].insert(message.eventID)
+                }
                 pendingGroupAborts = Dictionary(uniqueKeysWithValues: archive.pendingGroupAborts.map { ($0.group.id, $0) })
                 groupAbortTombstones = Dictionary(uniqueKeysWithValues: archive.groupAbortTombstones.map { ($0.abort.eventID, $0) })
                 for abort in archive.pendingGroupAborts {
@@ -2918,7 +3387,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                                            pendingGroupMembershipChanges: pendingGroupMembershipChanges,
                                            acceptedGroupInvitations: acceptedGroupInvitations,
                                             pendingGroupAborts: pendingGroupAborts.values.sorted { $0.group.id.uuidString < $1.group.id.uuidString },
-                                            groupAbortTombstones: groupAbortTombstones.values.sorted { $0.abort.eventID.uuidString < $1.abort.eventID.uuidString })
+                                            groupAbortTombstones: groupAbortTombstones.values.sorted { $0.abort.eventID.uuidString < $1.abort.eventID.uuidString },
+                                             pendingGroupLeaveRequests: pendingGroupLeaveRequests,
+                                             pendingGroupLeaveMessages: archivedPendingGroupLeaveMessages,
+                                             completedGroupLeaveReplies: archivedCompletedGroupLeaveReplies)
         try persist(archive, to: messagesURL)
         self.messages = messages
         hiddenConversationIDs = hidden

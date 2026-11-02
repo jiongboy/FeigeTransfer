@@ -1,7 +1,7 @@
 import Foundation
 
 struct ConversationArchive: Codable {
-    static let currentVersion = 6
+    static let currentVersion = 8
 
     var version: Int
     var messages: [ChatMessage]
@@ -16,6 +16,9 @@ struct ConversationArchive: Codable {
     var acceptedGroupInvitations: [UUID: GroupControlMessage]
     var pendingGroupAborts: [PendingGroupAbort]
     var groupAbortTombstones: [GroupAbortTombstone]
+    var pendingGroupLeaveRequests: [PendingGroupLeaveRequest]
+    var pendingGroupLeaveMessages: [GroupControlMessage]
+    var completedGroupLeaveReplies: [GroupControlMessage]
 
     init(messages: [ChatMessage] = [], hiddenFingerprints: Set<String> = [],
          groups: [GroupConversation] = [], groupMessages: [GroupMessageEnvelope] = [],
@@ -25,7 +28,10 @@ struct ConversationArchive: Codable {
           pendingGroupMembershipChanges: [UUID: GroupControlMessage] = [:],
          acceptedGroupInvitations: [UUID: GroupControlMessage] = [:],
           pendingGroupAborts: [PendingGroupAbort] = [],
-          groupAbortTombstones: [GroupAbortTombstone] = []) {
+          groupAbortTombstones: [GroupAbortTombstone] = [],
+          pendingGroupLeaveRequests: [PendingGroupLeaveRequest] = [],
+          pendingGroupLeaveMessages: [GroupControlMessage] = [],
+          completedGroupLeaveReplies: [GroupControlMessage] = []) {
         version = Self.currentVersion
         self.messages = messages
         self.hiddenFingerprints = hiddenFingerprints
@@ -39,18 +45,22 @@ struct ConversationArchive: Codable {
         self.acceptedGroupInvitations = acceptedGroupInvitations
         self.pendingGroupAborts = pendingGroupAborts
         self.groupAbortTombstones = groupAbortTombstones
+        self.pendingGroupLeaveRequests = pendingGroupLeaveRequests
+        self.pendingGroupLeaveMessages = pendingGroupLeaveMessages
+        self.completedGroupLeaveReplies = completedGroupLeaveReplies
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, messages, hiddenFingerprints, groups, groupMessages, groupDeliveries, groupFileLocations
         case pendingGroupCommits, pendingGroupPreparations, pendingGroupMembershipChanges, acceptedGroupInvitations
-        case pendingGroupAborts, groupAbortTombstones
+        case pendingGroupAborts, groupAbortTombstones, pendingGroupLeaveRequests, pendingGroupLeaveMessages
+        case completedGroupLeaveReplies
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let decodedVersion = try values.decode(Int.self, forKey: .version)
-        guard decodedVersion == 1 || decodedVersion == 2 || decodedVersion == 3 || decodedVersion == 4 || decodedVersion == 5 || decodedVersion == Self.currentVersion else {
+        guard (1...Self.currentVersion).contains(decodedVersion) else {
             throw ArchiveError.unsupportedVersion(decodedVersion)
         }
         version = Self.currentVersion
@@ -69,6 +79,30 @@ struct ConversationArchive: Codable {
                                                                forKey: .acceptedGroupInvitations) ?? [:]
         pendingGroupAborts = try values.decodeIfPresent([PendingGroupAbort].self, forKey: .pendingGroupAborts) ?? []
         groupAbortTombstones = try values.decodeIfPresent([GroupAbortTombstone].self, forKey: .groupAbortTombstones) ?? []
+        pendingGroupLeaveRequests = try values.decodeIfPresent([PendingGroupLeaveRequest].self,
+                                                               forKey: .pendingGroupLeaveRequests) ?? []
+        pendingGroupLeaveMessages = try values.decodeIfPresent([GroupControlMessage].self,
+                                                               forKey: .pendingGroupLeaveMessages) ?? []
+        completedGroupLeaveReplies = try values.decodeIfPresent([GroupControlMessage].self,
+                                                                 forKey: .completedGroupLeaveReplies) ?? []
+        let pendingLeaveRequestIDs = pendingGroupLeaveRequests.map(\.id)
+        let pendingLeaveMessageIDs = pendingGroupLeaveMessages.map(\.eventID)
+        let completedLeaveReplyIDs = completedGroupLeaveReplies.map(\.eventID)
+        guard Set(pendingLeaveRequestIDs).count == pendingLeaveRequestIDs.count,
+              Set(pendingLeaveMessageIDs).count == pendingLeaveMessageIDs.count,
+              Set(completedLeaveReplyIDs).count == completedLeaveReplyIDs.count,
+              pendingGroupLeaveRequests.allSatisfy({ request in
+                  request.message.kind == .leave && request.message.targetFingerprint != nil
+              }),
+              pendingGroupLeaveMessages.allSatisfy({
+                  $0.kind == .leave && $0.targetFingerprint != nil
+              }),
+              completedGroupLeaveReplies.allSatisfy({
+                  $0.kind == .leaveReply && $0.targetFingerprint != nil && $0.accepted != nil
+              }) else {
+            throw DecodingError.dataCorruptedError(forKey: .completedGroupLeaveReplies, in: values,
+                debugDescription: "群组退出请求或回执归档包含重复或无效记录")
+        }
         let pendingAbortGroupIDs = Set(pendingGroupAborts.map { $0.group.id })
         guard Set(pendingGroupAborts.map { $0.group.id }).count == pendingGroupAborts.count,
               pendingAbortGroupIDs.isDisjoint(with: Set(pendingGroupCommits.map { $0.group.id })),

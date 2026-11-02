@@ -37,8 +37,16 @@ public sealed class V3Connection : IAsyncDisposable
         CryptographicOperations.ZeroMemory(sendKey); CryptographicOperations.ZeroMemory(receiveKey);
     }
 
-    public static async Task<V3Connection> EstablishAsync(Stream stream, IdentityKey identity, bool initiator, string name,
+    public static Task<V3Connection> EstablishAsync(Stream stream, IdentityKey identity, bool initiator, string name,
         Func<string, CancellationToken, Task<bool>> approve, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(approve);
+        return EstablishAsync(stream, identity, initiator, name,
+            (peerName, _, token) => approve(peerName, token), cancellationToken);
+    }
+
+    public static async Task<V3Connection> EstablishAsync(Stream stream, IdentityKey identity, bool initiator, string name,
+        Func<string, string, CancellationToken, Task<bool>> approve, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(identity);
@@ -80,7 +88,7 @@ public sealed class V3Connection : IAsyncDisposable
             }
             else
             {
-                bool accepted = await approve(peer.DeviceName, consent.Token).WaitAsync(consent.Token);
+                bool accepted = await approve(peer.DeviceName, V3Wire.Fingerprint(peer), consent.Token).WaitAsync(consent.Token);
                 await connection.WriteAsync(8, new byte[] { accepted ? (byte)1 : (byte)0 }, consent.Token);
                 if (!accepted) throw new InvalidOperationException("已拒绝连接。");
             }

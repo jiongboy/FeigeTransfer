@@ -29,8 +29,9 @@ public sealed class PeerConnectionRegistry<T> where T : class
     public int ConnectionCount { get { lock (_gate) return _entries.Count; } }
     public int DirectPeerCount { get { lock (_gate) return _entries.Values.Count(entry => entry.IsDirect); } }
 
+    /// <summary>Registers an authenticated channel; replacement bypasses rank only for an approved reconnect.</summary>
     public ConnectionRegistrationResult<T> Register(T connection, string peerFingerprint, string initiatorFingerprint,
-        ReadOnlySpan<byte> transcriptDigest, bool direct)
+        ReadOnlySpan<byte> transcriptDigest, bool direct, bool replaceExisting = false)
     {
         ArgumentNullException.ThrowIfNull(connection);
         string peer = NormalizeFingerprint(peerFingerprint);
@@ -46,13 +47,14 @@ public sealed class PeerConnectionRegistry<T> where T : class
                 bool becameDirect = direct && !current.IsDirect;
                 if (becameDirect && _entries.Values.Count(entry => entry.IsDirect) >= MaximumDirectPeers)
                     throw new InvalidOperationException("直连设备已达到 20 台上限。");
-                if (CompareRank(peer, initiator, digest, current.InitiatorFingerprint, current.TranscriptDigest) >= 0)
+                if (!replaceExisting && CompareRank(peer, initiator, digest, current.InitiatorFingerprint, current.TranscriptDigest) >= 0)
                 {
                     if (becameDirect) _entries[peer] = current with { IsDirect = true };
                     CryptographicOperations.ZeroMemory(digest);
                     return new(ConnectionRegistrationDisposition.ExistingKept, current.Connection, connection);
                 }
                 _entries[peer] = new(connection, initiator, digest, direct || current.IsDirect);
+                CryptographicOperations.ZeroMemory(current.TranscriptDigest);
                 return new(ConnectionRegistrationDisposition.Replaced, connection, current.Connection);
             }
 

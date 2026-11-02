@@ -29,12 +29,28 @@ public sealed class V3PeerListener : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(local);
+        ArgumentNullException.ThrowIfNull(approve);
+        return AcceptAsync(() => local, (name, _, token) => approve(name, token), cancellationToken);
+    }
+
+    public Task<V3Connection> AcceptAsync(LocalDevice local, Func<string, string, CancellationToken, Task<bool>> approve,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(local);
         return AcceptAsync(() => local, approve, cancellationToken);
     }
 
     /// <summary>Reads the current identity/name after TCP accept so a pending wait does not capture an old name.</summary>
-    public async Task<V3Connection> AcceptAsync(Func<LocalDevice> localProvider, Func<string, CancellationToken, Task<bool>> approve,
+    public Task<V3Connection> AcceptAsync(Func<LocalDevice> localProvider, Func<string, CancellationToken, Task<bool>> approve,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(approve);
+        return AcceptAsync(localProvider, (name, _, token) => approve(name, token), cancellationToken);
+    }
+
+    /// <summary>Also supplies the authenticated peer fingerprint to approval handlers.</summary>
+    public async Task<V3Connection> AcceptAsync(Func<LocalDevice> localProvider,
+        Func<string, string, CancellationToken, Task<bool>> approve, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(localProvider);
         ArgumentNullException.ThrowIfNull(approve);
