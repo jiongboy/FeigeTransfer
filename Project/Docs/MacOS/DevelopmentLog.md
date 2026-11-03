@@ -4,6 +4,13 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-03：0.5.2 build 18 正式发布
+
+- **打包与公证**：从 `4ad7245` 运行 `FEIGE_NOTARY_PROFILE=feige-notary package-app.sh`，Developer ID Application: Song Li (9C8Y647J2R) 签名，公证提交 `d4e0229f-38b0-4bd1-8f8c-e7ed4dd7a39c` 为 Accepted，已 staple；`spctl` 为 Notarized Developer ID，zip 解压后的应用同样通过；`Feige.icns` 与仓库主图标一致。`FeigeMac-0.5.2.zip` 3,444,671 字节，SHA-256 `9b36a608…7daad62a`。
+- **更新源**：发布记录 `0.5.2-b18`（`protocolVersion` 6）用 `~/.feige/macos-release.pem` 经 `openssl` 签名，用 `UpdateSource.json` 公钥验签通过（同法复验 0.5.1 清单也通过）。上传到 Mac mini 临时目录 → 哈希核对 → 改名为 `versions/0.5.2-b18` → HTTP 重新下载核对 → 0.5.1 清单备份为 `feige-macos-update.previous.json` 后替换清单，线上清单与本地一致。签名清单与发布记录另存到 `Release/MacOS/0.5.2/`。
+- **GitHub**：Release `macos-v0.5.2`（非 Latest，Latest 仍为 `v1.3.1`），重新下载校验通过。
+- **未完成**：0.5.1 → 0.5.2 应用内升级、实际断开场景未实测。
+
 ## 2026-11-03：0.5.2：对方断开不再弹框
 
 - **原因**：会话读循环结束（对方离线、关闭应用或网络中断）时 `TransferModel` 设置 `errorMessage`，`ContentView` 的 `.alert` 因此弹出模态提示框。

@@ -3,6 +3,14 @@
 > 只记录对双端或协作方式有影响的变更，按时间倒序排列。平台内部实现细节见各平台开发日志：
 > [macOS 开发日志](../MacOS/DevelopmentLog.md) · [Windows 开发日志](../Windows/DevelopmentLog.md)
 
+## 2026-11-03 正式发布 macOS 0.5.2（Windows 1.3.2 待 ROG 签名）
+
+- macOS 0.5.2 build 18 从 master `4ad7245` 构建，Developer ID 签名并经 Apple 公证（Accepted，已 staple）。交付物、校验文件、签名清单和发布说明位于 `Release/MacOS/0.5.2/`。
+- GitHub：新建 `macos-v0.5.2`（不设 Latest）。重新下载后 SHA-256 一致。
+- Mac mini 局域网更新源：macOS 清单切到 0.5.2 b18，旧清单保留为 `feige-macos-update.previous.json`。
+- Windows 1.3.2 build 1308 需在 ROG 用发布证书签名后再发布；清单 `protocolVersion` 须为 3。
+- 未完成：从 0.5.1 的应用内升级、实际断开场景与表情面板的人工点击。
+
 ## 2026-11-03 Windows 1.3.2 与 macOS 0.5.2：表情崩溃、断开不再弹框
 
 - **Windows 点击表情崩溃**：`SendPage` 的表情面板把按钮直接放进 `WrapGrid`，而 WinUI 的 `WrapGrid` 只能作为 `ItemsControl` 的 `ItemsPanel`，面板首次布局时抛出 XAML 异常（事件日志 `Microsoft.UI.Xaml.dll`，`0xc000027b`）。改用可直接容纳子元素的 `VariableSizedWrapGrid`，布局参数不变。
