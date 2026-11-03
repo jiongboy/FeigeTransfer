@@ -1300,10 +1300,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             } catch {
                 guard activeConnectionTokens.contains(token) else { return }
                 let interrupted = messages.contains { $0.peerID == peerID && $0.isPending }
-                if !(error is CancellationError) {
-                    errorMessage = error.localizedDescription
-                    shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
-                }
+                // A peer going offline only changes the conversation status; it is not an error to acknowledge.
                 disconnect(peerID: peerID, failureReason: error.localizedDescription,
                            preservePendingRequests: true)
                 schedulePendingGroupLeaveReconnect(peerID: peerID)
@@ -1646,7 +1643,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     disconnect(peerID: peerID, failureReason: error.localizedDescription,
                                preservePendingRequests: true)
                     schedulePendingGroupLeaveReconnect(peerID: peerID)
-                    if !(error is CancellationError) {
+                    if !(error is CancellationError) && !isConnectionLoss(error) {
                         errorMessage = error.localizedDescription
                         shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
                     }
@@ -3865,6 +3862,19 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
            case .connectionFailed = transportError { return true }
         if let streamError = error as? AuthenticatedStreamError,
            case .timeout = streamError { return true }
+        return false
+    }
+
+    /// The peer went away mid-session; the message row and conversation status already say so.
+    private func isConnectionLoss(_ error: Error) -> Bool {
+        if let connectionError = error as? ConnectionError, case .closed = connectionError { return true }
+        if error is NetworkTransportError { return true }
+        if let streamError = error as? AuthenticatedStreamError {
+            switch streamError {
+            case .unexpectedEOF, .timeout, .cancelled: return true
+            default: return false
+            }
+        }
         return false
     }
 }

@@ -1662,7 +1662,11 @@ public sealed class AppSession
     {
         bool failed = false;
         try { await connection.RunAsync(() => Settings.ReceiveFolder, cancellation.Token, _inbox); }
-        catch (Exception ex) { if (!cancellation.IsCancellationRequested) { failed = true; Fail("连接已中断：" + ErrorText.Describe(ex)); } }
+        catch (Exception ex)
+        {
+            AppLog.Write($"v3 read loop failed type={ex.GetType().Name}");
+            if (!cancellation.IsCancellationRequested) { failed = true; Publish("连接已断开"); }
+        }
         finally
         {
             lock (_incomingDecisionGate)
@@ -1683,7 +1687,7 @@ public sealed class AppSession
         catch (Exception ex)
         {
             AppLog.Write($"v4 read loop failed type={ex.GetType().Name}");
-            if (!cancellation.IsCancellationRequested) { failed = true; Fail("连接已中断：" + ErrorText.Describe(ex)); }
+            if (!cancellation.IsCancellationRequested) { failed = true; Publish("连接已断开"); }
         }
         finally
         {
