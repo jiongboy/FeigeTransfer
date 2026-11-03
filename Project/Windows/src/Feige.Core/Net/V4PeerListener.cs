@@ -38,9 +38,17 @@ public sealed class V4PeerListener : IAsyncDisposable
         return AcceptAsync(() => local, approve, cancellationToken);
     }
 
-    /// <summary>Obtains the current local identity/name after accept and prompts once for this connection only.</summary>
-    public async Task<V4Connection> AcceptAsync(Func<LocalDevice> localProvider,
+    public Task<V4Connection> AcceptAsync(Func<LocalDevice> localProvider,
         Func<string, CancellationToken, Task<bool>> approve, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(approve);
+        return AcceptAsync(localProvider, (name, _, token) => approve(name, token), cancellationToken);
+    }
+
+    /// <summary>Obtains the current local identity/name after accept and prompts once for this connection only.
+    /// The approval receives the peer name and its authenticated fingerprint.</summary>
+    public async Task<V4Connection> AcceptAsync(Func<LocalDevice> localProvider,
+        Func<string, string, CancellationToken, Task<bool>> approve, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(localProvider);
         ArgumentNullException.ThrowIfNull(approve);

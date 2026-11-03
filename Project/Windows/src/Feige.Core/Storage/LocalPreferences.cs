@@ -1,10 +1,13 @@
 using System.Text;
 using System.Text.Json;
+using Feige.Core.Profiles;
 
 namespace Feige.Core.Storage;
 
 public sealed record LocalPreferences(string DeviceName, string ReceiveFolder, SetupProgress? Setup = null,
-    bool AutoCheckUpdates = true, bool NotificationsEnabled = false)
+    bool AutoCheckUpdates = true, bool NotificationsEnabled = false, string? AvatarId = null,
+    Dictionary<string, string>? PeerAvatarIds = null, string[]? ProbeTargets = null, bool AllowsProbes = true,
+    string[]? TrustedPeers = null)
 {
     public void Validate()
     {

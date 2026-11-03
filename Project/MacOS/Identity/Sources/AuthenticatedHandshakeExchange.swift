@@ -74,7 +74,7 @@ public enum AuthenticatedHandshakeExchange {
         await onStage(.exchangingOffers)
         let peerEnvelope: OfferEnvelope = try await readFrame(transport: transport, as: OfferEnvelope.self, timeout: timeout)
         let peer = peerEnvelope.offer
-        guard peer.role == .initiator, peer.version == 3 || peer.version == 4 || peer.version == 5 else {
+        guard peer.role == .initiator, (3...6).contains(peer.version) else {
             throw HandshakeError.invalidOffer
         }
         let local = try FeigeHandshake(identity: identity, role: .responder, deviceName: deviceName,

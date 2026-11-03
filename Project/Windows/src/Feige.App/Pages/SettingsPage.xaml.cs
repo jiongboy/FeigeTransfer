@@ -1,6 +1,7 @@
 using Feige.App.Services;
 using Feige.Core.Storage;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Media;
@@ -12,10 +13,12 @@ namespace Feige.App.Pages;
 public sealed partial class SettingsPage : Page
 {
     private bool _refreshingPreferences;
+    private bool _refreshingAvatar;
     /// <summary>Creates the page.</summary>
     public SettingsPage()
     {
         InitializeComponent();
+        AvatarPicker.ItemsSource = AvatarCatalog.Choices;
     }
 
     /// <inheritdoc />
@@ -35,7 +38,7 @@ public sealed partial class SettingsPage : Page
         base.OnNavigatedFrom(e);
     }
 
-    private void OnConnectionStateChanged(object? sender, EventArgs e) { RefreshConnectionInfo(); RefreshHiddenConversations(); }
+    private void OnConnectionStateChanged(object? sender, EventArgs e) { RefreshConnectionInfo(); RefreshHiddenConversations(); RefreshTrustedPeers(); }
 
     private void RefreshConnectionInfo()
     {
@@ -55,6 +58,7 @@ public sealed partial class SettingsPage : Page
         FolderText.Text = session.Settings.ReceiveFolder;
         RefreshConnectionInfo();
         RefreshHiddenConversations();
+        RefreshTrustedPeers();
 
         NotifyStatusText.Text = Notifier.Current.Status;
         TestNotifyButton.IsEnabled = Notifier.Current.IsAvailable;
@@ -62,6 +66,12 @@ public sealed partial class SettingsPage : Page
         _refreshingPreferences = true;
         AutoUpdatesSwitch.IsOn = session.Settings.AutoCheckUpdates;
         _refreshingPreferences = false;
+        ProbeTargetsBox.Text = string.Join(Environment.NewLine, session.Settings.ProbeTargets);
+        AllowsProbesSwitch.IsOn = session.Settings.AllowsProbes;
+        RefreshProbeHint();
+        _refreshingAvatar = true;
+        AvatarPicker.SelectedItem = AvatarCatalog.Choices.FirstOrDefault(choice => choice.Id == session.Settings.AvatarId);
+        _refreshingAvatar = false;
         RefreshUpdates();
 
         int count = session.ReceivedFiles.Count + session.SentFiles.Count;
@@ -78,6 +88,30 @@ public sealed partial class SettingsPage : Page
         HiddenConversationList.Visibility = hidden.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         HiddenConversationsEmpty.Visibility = hidden.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         RestoreAllConversationsButton.IsEnabled = hidden.Length > 0;
+    }
+
+    private void RefreshTrustedPeers()
+    {
+        AppSession session = AppSession.Current;
+        TrustedPeersPanel.Children.Clear();
+        foreach (string fingerprint in session.Settings.TrustedPeers)
+        {
+            var row = new Grid { ColumnSpacing = 12 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var labels = new StackPanel { Spacing = 2 };
+            labels.Children.Add(new TextBlock { Text = session.TrustedPeerName(fingerprint), FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis });
+            labels.Children.Add(new TextBlock { Text = fingerprint[..16] + "…", FontSize = 11, FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
+            var remove = new Button { Content = "移除", FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+            AutomationProperties.SetName(remove, "移除常驻联系人 " + session.TrustedPeerName(fingerprint));
+            remove.Click += (_, _) => { session.SetTrustedPeer(fingerprint, false); RefreshTrustedPeers(); };
+            Grid.SetColumn(remove, 1);
+            row.Children.Add(labels);
+            row.Children.Add(remove);
+            TrustedPeersPanel.Children.Add(row);
+        }
+        TrustedPeersEmpty.Visibility = session.Settings.TrustedPeers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async void OnRestoreConversationClick(object sender, RoutedEventArgs e)
@@ -104,6 +138,24 @@ public sealed partial class SettingsPage : Page
     }
 
     private async void OnUsageHelpClick(object sender, RoutedEventArgs e) => await ConnectionHelp.ShowAsync();
+    private void RefreshProbeHint() => ProbeHintText.Text = AppSession.Current.ProbePortUnavailable
+        ? "UDP 端口 52526 被占用，其他网段暂时无法发现本机，本机仍可探测对方。"
+        : "对方防火墙需放行 UDP 52526 和应用的 TCP 端口；应用不会替你修改防火墙。";
+
+    private async void OnSaveProbeTargetsClick(object sender, RoutedEventArgs e)
+    {
+        SaveProbeTargetsButton.IsEnabled = false;
+        try
+        {
+            string[] lines = ProbeTargetsBox.Text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            await AppSession.Current.SaveProbeSettingsAsync(lines, AllowsProbesSwitch.IsOn);
+            ProbeTargetsBar.IsOpen = false;
+            RefreshProbeHint();
+        }
+        catch (Exception ex) { ProbeTargetsBar.Message = ErrorText.Describe(ex); ProbeTargetsBar.IsOpen = true; }
+        finally { SaveProbeTargetsButton.IsEnabled = true; }
+    }
+
     private void OnAutoUpdatesToggled(object sender, RoutedEventArgs e)
     {
         if (_refreshingPreferences || AutoUpdatesSwitch is null || UpdatesPreferenceBar is null) return;
@@ -207,6 +259,24 @@ public sealed partial class SettingsPage : Page
         catch (Exception)
         {
             // Explorer may refuse; best effort only.
+        }
+    }
+
+    private async void OnAvatarSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_refreshingAvatar || AvatarPicker.SelectedItem is not AvatarChoice choice) return;
+        try
+        {
+            await AppSession.Current.UpdateAvatarIdAsync(choice.Id);
+            AvatarBar.Severity = InfoBarSeverity.Success;
+            AvatarBar.Message = "已保存并更新附近设备显示。";
+            AvatarBar.IsOpen = true;
+        }
+        catch (Exception ex)
+        {
+            AvatarBar.Severity = InfoBarSeverity.Error;
+            AvatarBar.Message = ErrorText.Describe(ex);
+            AvatarBar.IsOpen = true;
         }
     }
 

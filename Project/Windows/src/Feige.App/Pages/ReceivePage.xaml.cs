@@ -183,6 +183,7 @@ public sealed partial class ReceivePage : Page
 
         try
         {
+            if (Directory.Exists(item.Path)) { await Launcher.LaunchFolderPathAsync(item.Path); return; }
             Windows.Storage.StorageFile file = await Windows.Storage.StorageFile.GetFileFromPathAsync(item.Path);
             await Launcher.LaunchFileAsync(file);
         }

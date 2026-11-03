@@ -269,12 +269,13 @@ public sealed class PeerBrowser : IAsyncDisposable
 
         Entry entry = GetOrCreate(txt.Name, DateTimeOffset.UtcNow);
         (string name, string? fingerprint) = FeigeService.ParseTxt(txt.Entries);
+        string? avatarId = FeigeService.ParseAvatarId(txt.Entries);
         IReadOnlySet<int> supportedVersions = FeigeService.ParseSupportedVersions(txt.Entries);
         int advertisedVersion = FeigeService.ParseProtocolVersion(txt.Entries);
         entry.SupportedVersions = supportedVersions;
         entry.ProtocolVersion = RequiredVersion is int required && supportedVersions.Contains(required)
-            ? required == 4 && supportedVersions.Contains(5) ? 5 : required
-            : supportedVersions.Contains(5) ? 5 : supportedVersions.Contains(4) ? 4 : advertisedVersion;
+            ? required == 4 ? Newest(supportedVersions) : required
+            : supportedVersions.Contains(4) ? Newest(supportedVersions) : advertisedVersion;
         entry.VersionMatches = RequiredVersion is null || txt.Ttl != 0 &&
             (supportedVersions.Contains(RequiredVersion.Value) || RequiredVersion.Value == 4 && supportedVersions.Contains(5));
         if (!entry.VersionMatches && entry.Reported is { } reported)
@@ -285,6 +286,7 @@ public sealed class PeerBrowser : IAsyncDisposable
         }
         entry.DeviceName = name;
         entry.Fingerprint = fingerprint;
+        entry.AvatarId = avatarId;
     }
 
     private void HandleAddress(AddressRecord record, DateTimeOffset now, MdnsDatagram datagram)
@@ -336,12 +338,13 @@ public sealed class PeerBrowser : IAsyncDisposable
                 EndPoints = targets,
                 ProtocolVersion = entry.ProtocolVersion,
                 SupportedVersions = new HashSet<int>(entry.SupportedVersions),
+                AvatarId = entry.AvatarId,
             };
             if (entry.Reported is { } previous)
             {
                 if (previous.DeviceName == peer.DeviceName && previous.Fingerprint == peer.Fingerprint &&
                     previous.ProtocolVersion == peer.ProtocolVersion && previous.SupportedVersions.SetEquals(peer.SupportedVersions) &&
-                    previous.EndPoints.SequenceEqual(targets)) continue;
+                    previous.AvatarId == peer.AvatarId && previous.EndPoints.SequenceEqual(targets)) continue;
                 _peers.Remove(previous);
             }
             entry.Reported = peer; _peers.Add(peer); found.Add(peer);
@@ -440,6 +443,10 @@ public sealed class PeerBrowser : IAsyncDisposable
 
     private static DateTimeOffset Max(DateTimeOffset left, DateTimeOffset right) => left > right ? left : right;
 
+    /// <summary>Newest v4-family version both sides speak; v5 and v6 keep every v4 record.</summary>
+    private static int Newest(IReadOnlySet<int> versions)
+        => versions.Contains(6) ? 6 : versions.Contains(5) ? 5 : 4;
+
     private sealed class Entry(DnsName instance, DateTimeOffset now)
     {
         public int ProtocolVersion { get; set; }
@@ -452,6 +459,8 @@ public sealed class PeerBrowser : IAsyncDisposable
         public string DeviceName { get; set; } = string.Empty;
 
         public string? Fingerprint { get; set; }
+
+        public string? AvatarId { get; set; }
 
         public ushort? Port { get; set; }
 

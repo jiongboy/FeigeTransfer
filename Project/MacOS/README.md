@@ -2,7 +2,7 @@
 
 本项目位于 `Project/MacOS/`，与 `Project/Windows/` 客户端共用协议及开发规范；两个平台使用同一 `main` 主线。
 
-Swift 6 / SwiftUI，最低 macOS 13，通过 Swift Package 构建。当前版本 **0.4.0（构建 7）**，功能与 Windows 1.2.x 对齐。
+Swift 6 / SwiftUI，最低 macOS 13，通过 Swift Package 构建。当前版本 **0.4.1（构建 15）**，功能与 Windows 1.2.x 对齐。
 
 ```sh
 cd Project/MacOS

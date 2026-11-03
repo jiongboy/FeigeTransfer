@@ -21,6 +21,8 @@ public sealed partial class SetupPage : Page
         base.OnNavigatedTo(e); _active = true;
         _repair = Session.Settings.Setup.Ended;
         SetupNameBox.Text = Session.Settings.DeviceName;
+        AvatarPicker.ItemsSource = AvatarCatalog.Choices;
+        AvatarPicker.SelectedItem = AvatarCatalog.Choices.FirstOrDefault(choice => choice.Id == Session.Settings.AvatarId);
         _folder = Session.Settings.ReceiveFolder; UpdateFolder();
         SetupUpdatesSwitch.IsOn = Session.Settings.AutoCheckUpdates;
         Session.StateChanged += OnStateChanged;
@@ -70,7 +72,7 @@ public sealed partial class SetupPage : Page
     {
         _transitioning = busy;
         SetupBackButton.IsEnabled = SetupLaterButton.IsEnabled = !busy;
-        SetupNameBox.IsEnabled = SetupChangeFolderButton.IsEnabled = SetupUpdatesSwitch.IsEnabled = !busy; RefreshState();
+        SetupNameBox.IsEnabled = SetupChangeFolderButton.IsEnabled = SetupUpdatesSwitch.IsEnabled = AvatarPicker.IsEnabled = !busy; RefreshState();
     }
     private async Task PrepareAsync()
     {
@@ -111,7 +113,8 @@ public sealed partial class SetupPage : Page
             try { await Task.Run(() => SetupValidation.ReceiveFolder(_folder)); }
             catch (Exception ex) { if (_active) { SetupFolderError.Message = ErrorText.Describe(ex); SetupFolderError.IsOpen = true; } return; }
             if (!_active) return;
-            Session.SaveGuideSettings(name, _folder, SetupUpdatesSwitch.IsOn);
+            string avatarId = (AvatarPicker.SelectedItem as AvatarChoice)?.Id ?? Session.Settings.AvatarId;
+            Session.SaveGuideSettings(name, _folder, SetupUpdatesSwitch.IsOn, avatarId);
             ShowStep(2); SetTransition(false); await PrepareAsync();
         }
         catch (Exception ex) { if (_active) ShowError(ex); }

@@ -9,8 +9,13 @@ struct SetupView: View {
     @Environment(\.dismiss) private var dismiss
     let isFirstRun: Bool
     @State private var deviceName = ""
+    @State private var avatarId = AvatarID.default
+    @State private var avatarSaveMessage: String?
     @State private var saveError: String?
     @State private var firstRunStep = 0
+    @State private var probeTargetsText = ""
+    @State private var allowsProbes = true
+    @State private var probeSettingsError: String?
     @State private var updateRevision = 0
     @FocusState private var isDeviceNameFocused: Bool
     @State private var receiveDirectory = URL(fileURLWithPath: NSHomeDirectory()).appendPathComponentCompat("Downloads/Feige Received")
@@ -29,9 +34,12 @@ struct SetupView: View {
                 }
                 if isFirstRun && firstRunStep == 1 {
                     identityCard(showsPreparation: true)
+                    networkPermissionCard
                 }
                 if !isFirstRun {
                     connectionCard
+                    networkCard
+                    trustedPeersCard
                     updatesCard.id(updateRevision)
                     notificationsCard
                     recordsCard
@@ -49,6 +57,8 @@ struct SetupView: View {
         .frame(width: isFirstRun ? 560 : 620, height: isFirstRun ? 620 : 760)
         .onAppear {
             deviceName = model.settings.deviceName
+            avatarId = model.settings.avatarId
+            avatarSaveMessage = nil
             receiveDirectory = model.settings.receiveDirectory
             firstRunStep = model.settings.setupStep ?? 0
             isDeviceNameFocused = isFirstRun && firstRunStep == 0
@@ -77,8 +87,8 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(isFirstRun ? (firstRunStep == 0 ? "欢迎使用飞鸽快传" : "准备安全连接") : "偏好设置")
                     .font(.system(size: 20, weight: .bold))
-                Text(isFirstRun ? (firstRunStep == 0 ? "先设置本机名称和文件接收位置。" : "确认身份状态后即可开始连接附近设备。")
-                     : "管理本机设备、接收位置和使用偏好。")
+                Text(isFirstRun ? (firstRunStep == 0 ? "设置本机名称、头像和接收位置；同一局域网会自动发现。" : "确认身份状态后即可连接附近设备。")
+                     : "管理本机名称、头像、接收位置和使用偏好。")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -96,7 +106,7 @@ struct SetupView: View {
     // MARK: cards
 
     private var deviceCard: some View {
-        Card(title: "设备名称", subtitle: "其他设备会通过这个名称找到你。") {
+        Card(title: "设备名称与头像", subtitle: "其他设备会通过名称找到你；同一局域网内会自动发现。") {
             HStack(spacing: 8) {
                 TextField("例如：书房 Mac", text: $deviceName)
                     .textFieldStyle(.roundedBorder)
@@ -108,6 +118,30 @@ struct SetupView: View {
             }
             Text("1–48 个字符，最长 128 字节，不能包含换行等控制字符。改名不会改变设备身份或合并历史。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5), spacing: 8) {
+                ForEach(AvatarCatalog.choices) { choice in
+                    Button { selectAvatar(choice.id) } label: {
+                        VStack(spacing: 4) {
+                            AvatarView(avatarID: choice.id, size: 44)
+                            Text(choice.name).font(.system(size: 10)).foregroundStyle(.primary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(6)
+                        .background(avatarId == choice.id ? Color.accentColor.opacity(0.1) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8)
+                            .stroke(avatarId == choice.id ? Color.accentColor : Color.clear, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(choice.name)头像")
+                    .accessibilityAddTraits(avatarId == choice.id ? .isSelected : [])
+                }
+            }
+            Text(avatarSaveMessage ?? (isFirstRun
+                 ? "头像仅作装饰信息；首次设置时会与设备名称一起保存。"
+                 : "头像仅作装饰信息，不用于身份验证；选择后立即保存，并显示在本机资料与发出消息中。"))
+                .font(.system(size: 11))
+                .foregroundStyle(avatarSaveMessage == nil ? Color.secondary : Color.green)
         }
     }
 
@@ -130,15 +164,44 @@ struct SetupView: View {
     }
 
     private var connectionCard: some View {
-        Card(title: "本机连接信息", subtitle: "与对方处于同一局域网；连接请求需对方同意。") {
+        Card(title: "本机连接信息", subtitle: "同一局域网内会自动发现设备；连接请求需对方同意。") {
             Text(connectionStatus)
                 .font(.system(size: 13, weight: .semibold))
             ForEach(connectionLines, id: \.self) { line in
                 Text(line).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                     .foregroundStyle(.secondary)
             }
-            Text("手动连接时，可将以上地址和端口提供给对方。")
+            Text("通常无需手动填写地址；仅在自动发现不可用时，使用以上地址和端口连接。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+
+    private var networkCard: some View {
+        Card(title: "其他网段", subtitle: "对方在其他网段时自动发现不可用，可在此保存对方地址或网段，例如 192.168.60.12 或 192.168.60.0/24。") {
+            TextEditor(text: $probeTargetsText)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(height: 64)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                .accessibilityLabel("其他网段，一行一项")
+            Toggle("允许其他网段发现本机", isOn: $allowsProbes)
+            HStack(spacing: 8) {
+                Button("保存网段") {
+                    do {
+                        try model.saveProbeSettings(targets: probeTargetsText.components(separatedBy: .newlines), allowsProbes: allowsProbes)
+                        probeSettingsError = nil
+                    } catch { probeSettingsError = error.localizedDescription }
+                }
+                if let probeSettingsError {
+                    Text(probeSettingsError).font(.system(size: 11)).foregroundStyle(.red)
+                }
+            }
+            Text(model.probePortUnavailable ? "端口 52526 被占用，其他网段暂时无法发现本机，本机仍可探测对方。"
+                                            : "一行一项，最多 16 项。对方防火墙需放行 UDP 52526 和应用的 TCP 端口；应用不会替你修改防火墙。")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear {
+            probeTargetsText = model.settings.probeTargets.joined(separator: "\n")
+            allowsProbes = model.settings.allowsProbes
         }
     }
 
@@ -226,6 +289,26 @@ struct SetupView: View {
         return count == 0 ? "还没有记录。" : "已保存 \(count) 条记录（传输记录 \(model.records.count) 条、会话消息 \(model.messages.count) 条），保留最近 1000 条已结束消息。"
     }
 
+    private var trustedPeersCard: some View {
+        Card(title: "常驻联系人", subtitle: "常驻联系人上线后自动连接，对方发起的连接自动同意；接收文件仍需确认。只认设备身份，不看名称或地址。") {
+            if model.settings.trustedPeers.isEmpty {
+                Text("没有常驻联系人。可以在连接确认框或会话右键菜单中设置。").font(.system(size: 11)).foregroundStyle(.tertiary)
+            } else {
+                ForEach(model.settings.trustedPeers, id: \.self) { peerID in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.trustedPeerName(peerID)).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Text(String(peerID.prefix(16)) + "…").font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Button("移除") { try? model.setTrustedPeer(peerID, trusted: false) }.controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
     private var hiddenConversationsCard: some View {
         Card(title: "隐藏的会话", subtitle: "隐藏仅从会话列表移除，聊天记录仍保留；收到新消息或重新连接时会再次显示。") {
             if model.hiddenConversations.isEmpty {
@@ -243,6 +326,15 @@ struct SetupView: View {
                 }
                 Button("全部恢复") { model.restoreAllConversations() }.controlSize(.small)
             }
+        }
+    }
+
+    private var networkPermissionCard: some View {
+        Card(title: "局域网发现与权限", subtitle: "完成设置并开始后，应用会自动查找同一局域网中的飞鸽设备。") {
+            Text("macOS 可能会在首次访问局域网时询问是否允许本应用发现附近设备并接受连接请求。允许访问不会改变设备身份或连接同意规则。")
+                .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            Text("如果没有找到设备，可先确认另一台设备已启动并接入可互通网络；如曾拒绝本地网络访问，到“系统设置 → 隐私与安全性 → 本地网络”检查飞鸽快传权限，再重新打开应用并刷新设备。也可以使用次级的手动局域网连接入口。")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -298,7 +390,7 @@ struct SetupView: View {
                 if firstRunStep == 1 {
                     Button("上一步") {
                         do {
-                            try model.saveSetupDraft(deviceName: deviceName, receiveDirectory: receiveDirectory, nextStep: 0)
+                            try model.saveSetupDraft(deviceName: deviceName, receiveDirectory: receiveDirectory, nextStep: 0, avatarId: avatarId)
                             firstRunStep = 0
                         } catch { saveError = error.localizedDescription }
                     }
@@ -329,11 +421,11 @@ struct SetupView: View {
         if !isFirstRun { dismiss(); return }
         do {
             if firstRunStep == 0 {
-                try model.saveSetupDraft(deviceName: deviceName, receiveDirectory: receiveDirectory, nextStep: 1)
+                try model.saveSetupDraft(deviceName: deviceName, receiveDirectory: receiveDirectory, nextStep: 1, avatarId: avatarId)
                 firstRunStep = 1
                 Task { await model.prepareIdentityForSetup() }
             } else {
-                try model.saveSettings(deviceName: deviceName, receiveDirectory: receiveDirectory)
+                try model.saveSettings(deviceName: deviceName, receiveDirectory: receiveDirectory, avatarId: avatarId)
                 Task { await model.start() }
                 dismiss()
             }
@@ -342,9 +434,25 @@ struct SetupView: View {
         }
     }
 
+    private func selectAvatar(_ id: String) {
+        avatarId = AvatarID.normalize(id)
+        guard !isFirstRun else {
+            avatarSaveMessage = "继续设置后会与其他首次设置一起保存。"
+            return
+        }
+        do {
+            try model.saveAvatarId(avatarId)
+            avatarSaveMessage = "头像已保存"
+            saveError = nil
+        } catch {
+            avatarSaveMessage = nil
+            saveError = "头像保存失败：\(error.localizedDescription)"
+        }
+    }
+
     private func saveName() {
         do {
-            try model.saveSettings(deviceName: deviceName, receiveDirectory: receiveDirectory)
+            try model.saveSettings(deviceName: deviceName, receiveDirectory: receiveDirectory, avatarId: avatarId)
             saveError = nil
         } catch {
             saveError = error.localizedDescription
@@ -355,7 +463,7 @@ struct SetupView: View {
         if let selected = model.chooseReceiveFolder() {
             receiveDirectory = selected
             if !isFirstRun {
-                do { try model.saveSettings(deviceName: deviceName, receiveDirectory: selected) }
+                do { try model.saveSettings(deviceName: deviceName, receiveDirectory: selected, avatarId: avatarId) }
                 catch { saveError = error.localizedDescription }
             }
         }

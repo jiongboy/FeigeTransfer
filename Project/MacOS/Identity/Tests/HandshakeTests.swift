@@ -51,16 +51,24 @@ final class HandshakeTests: XCTestCase {
     }
 
     func testSharedV5HandshakeTranscriptAndDirectionalHKDFVectors() throws {
+        try checkSharedVector(version: 5)
+    }
+
+    func testSharedV6HandshakeTranscriptAndDirectionalHKDFVectors() throws {
+        try checkSharedVector(version: 6)
+    }
+
+    private func checkSharedVector(version: Int) throws {
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Docs/Public/TestVectors/v5-handshake.json")
+            .appendingPathComponent("Docs/Public/TestVectors/v\(version)-handshake.json")
         let data = try Data(contentsOf: fixtureURL)
         let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(fixture["format"] as? String, "feige-v5-handshake-primitives")
-        XCTAssertEqual(fixture["version"] as? Int, 5)
+        XCTAssertEqual(fixture["format"] as? String, "feige-v\(version)-handshake-primitives")
+        XCTAssertEqual(fixture["version"] as? Int, version)
 
         func offer(_ key: String) throws -> HandshakeOffer {
             let object = try XCTUnwrap(fixture[key] as? [String: Any])

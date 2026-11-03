@@ -41,6 +41,14 @@ public partial class App : Application
         AppSession.Current.Initialize(dispatcher);
         // Optional notification registration waits for an explicit preference, never the welcome page.
         AppLog.Write($"application: packaged={AppEnvironment.IsPackaged} architecture={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture} version={GetType().Assembly.GetName().Version}");
+        try
+        {
+            var tray = new TrayIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"), ShowMainWindow, () => _ = window.ExitAsync());
+            AppSession.Current.UnreadChanged += (_, _) => tray.SetUnread(AppSession.Current.UnreadTotal);
+            tray.SetUnread(AppSession.Current.UnreadTotal);
+            window.Closed += (_, _) => tray.Dispose();
+        }
+        catch (InvalidOperationException ex) { AppLog.Write("tray unavailable: " + ex.Message); }
         await window.InitializeExperienceAsync();
         AppUpdates.Current.Initialize(dispatcher);
         window.Closed += (_, _) => AppUpdates.Current.Stop(preserveHandoff: window.IsUpdateExit);

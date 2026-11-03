@@ -19,10 +19,12 @@ public sealed record V4Offer(
 {
     public const ushort CurrentVersion = 4;
     public const ushort DurableAbortVersion = 5;
+    /// <summary>v6 adds resumable transfers and folders (Protocol v6).</summary>
+    public const ushort ResumableVersion = 6;
 
     public void Validate()
     {
-        if (Version is not (CurrentVersion or DurableAbortVersion) || Role is not (1 or 2) || string.IsNullOrEmpty(DeviceName) ||
+        if (Version is not (CurrentVersion or DurableAbortVersion or ResumableVersion) || Role is not (1 or 2) || string.IsNullOrEmpty(DeviceName) ||
             Encoding.UTF8.GetByteCount(DeviceName) > 128 || IdentityPublicKeyDER is not { Length: > 0 and <= 1024 } ||
             EphemeralPublicKey is not { Length: 32 } || Nonce is not { Length: 32 } || SessionCode != "")
             throw new InvalidDataException("对方协议版本不兼容或设备信息无效；v4 不会回退到旧版本。");

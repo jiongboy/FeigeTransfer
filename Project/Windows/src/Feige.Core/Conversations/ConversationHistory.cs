@@ -15,9 +15,15 @@ public sealed record ConversationMessage(
     [property: JsonRequired] MessageKind Kind,
     [property: JsonRequired] MessageState State,
     [property: JsonRequired] DateTimeOffset At,
-    string Text = "", string FileName = "", string Path = "", long Size = 0, string Error = "")
+    string Text = "", string FileName = "", string Path = "", long Size = 0, string Error = "",
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? OutboxSince = null)
 {
     public bool IsActive => State is MessageState.Queued or MessageState.Sending;
+    /// <summary>A sent message written while the peer was not connected; it is delivered automatically once connected.</summary>
+    public bool IsOutbox => OutboxSince is not null && Direction == TransferDirection.Sent && IsActive;
+    /// <summary>Outbox messages go back to pending after an interruption; other active messages fail.</summary>
+    public ConversationMessage Interrupted(string error)
+        => OutboxSince is not null && Direction == TransferDirection.Sent ? this with { State = MessageState.Queued, Error = "" } : this with { State = MessageState.Failed, Error = error };
     public void Validate()
     {
         if (Id == Guid.Empty || Fingerprint.Length != 64 || !Fingerprint.All(char.IsAsciiHexDigit) ||
@@ -29,7 +35,8 @@ public sealed record ConversationMessage(
         if ((Direction == TransferDirection.Sent && State == MessageState.Received) ||
             (Direction == TransferDirection.Received && State is (MessageState.Queued or MessageState.Delivered)) ||
             (State == MessageState.Declined && Kind == MessageKind.Text) ||
-            (Direction == TransferDirection.Received && State == MessageState.Declined && string.IsNullOrWhiteSpace(Error)))
+            (Direction == TransferDirection.Received && State == MessageState.Declined && string.IsNullOrWhiteSpace(Error)) ||
+            (OutboxSince is not null && Direction != TransferDirection.Sent))
             throw new InvalidDataException("会话记录方向与状态不一致。");
     }
 }
@@ -38,6 +45,9 @@ public sealed record ConversationMessage(
 public sealed class ConversationHistory
 {
     public const int MaxCompleted = 1000;
+    public const int OutboxLimit = 200;
+    public static readonly TimeSpan OutboxLifetime = TimeSpan.FromDays(7);
+    public const string OutboxExpiredError = "超过 7 天未送达，请手动重发。";
     private readonly string _path;
     private readonly object _gate = new();
     private List<ConversationMessage> _messages = [];
@@ -66,7 +76,7 @@ public sealed class ConversationHistory
             var message = row with { Fingerprint = NormalizeFingerprint(row.Fingerprint) };
             message.Validate();
             if (!keys.Add((message.Fingerprint, message.Direction, message.Id))) throw new InvalidDataException("会话记录重复。");
-            history._messages.Add(message.IsActive ? message with { State = MessageState.Failed, Error = "上次运行时未完成，请重连后重试。" } : message);
+            history._messages.Add(message.IsActive ? message.Interrupted("上次运行时未完成，请重连后重试。") : message);
         }
         if (file.HiddenFingerprints is { Count: > 10000 }) throw new InvalidDataException("隐藏会话记录过多。");
         foreach (string fingerprint in file.HiddenFingerprints ?? [])
@@ -97,10 +107,75 @@ public sealed class ConversationHistory
         lock (_gate)
         {
             var changed = _messages.Where(m => m.Fingerprint == fingerprint && m.IsActive)
-                .Select(m => m with { State = MessageState.Failed, Error = error }).ToArray();
+                .Select(m => m.Interrupted(error)).ToArray();
             if (changed.Length == 0) return changed;
-            var next = _messages.Select(m => m.Fingerprint == fingerprint && m.IsActive ? m with { State = MessageState.Failed, Error = error } : m).ToList();
+            var next = _messages.Select(m => m.Fingerprint == fingerprint && m.IsActive ? m.Interrupted(error) : m).ToList();
             Commit(next);
+            return changed;
+        }
+    }
+
+    public int OutboxCount(string fingerprint)
+    {
+        fingerprint = NormalizeFingerprint(fingerprint);
+        lock (_gate) return _messages.Count(m => m.Fingerprint == fingerprint && m.IsOutbox);
+    }
+
+    /// <summary>The oldest pending outbox message; delivery takes one at a time so messages leave in order.</summary>
+    public ConversationMessage? NextOutbox(string fingerprint)
+    {
+        fingerprint = NormalizeFingerprint(fingerprint);
+        lock (_gate)
+            return _messages.Where(m => m.Fingerprint == fingerprint && m.IsOutbox && m.State == MessageState.Queued)
+                .OrderBy(m => m.At).FirstOrDefault();
+    }
+
+    /// <summary>Adds new outbox messages, or queues failed ones again, within the per-conversation limit.</summary>
+    public void Enqueue(IReadOnlyList<ConversationMessage> messages)
+    {
+        if (messages.Count == 0) return;
+        var rows = messages.Select(m => m with { Fingerprint = NormalizeFingerprint(m.Fingerprint) }).ToArray();
+        foreach (var message in rows)
+        {
+            message.Validate();
+            if (!message.IsOutbox || message.State != MessageState.Queued || message.Fingerprint != rows[0].Fingerprint)
+                throw new ArgumentException("只能加入同一会话的待发送消息。", nameof(messages));
+        }
+        lock (_gate)
+        {
+            var next = _messages.Where(m => !rows.Any(row => row.Id == m.Id && row.Fingerprint == m.Fingerprint && row.Direction == m.Direction)).ToList();
+            if (next.Count(m => m.Fingerprint == rows[0].Fingerprint && m.IsOutbox) + rows.Length > OutboxLimit)
+                throw new InvalidOperationException($"该会话已有 {OutboxLimit} 条待发送消息，请等对方上线送达后再发送。");
+            next.AddRange(rows);
+            var hidden = new HashSet<string>(_hidden, StringComparer.Ordinal);
+            hidden.Remove(rows[0].Fingerprint);
+            Commit(next, hidden);
+        }
+    }
+
+    /// <summary>Removes an outbox message that has not started delivery.</summary>
+    public bool CancelOutbox(string fingerprint, Guid id)
+    {
+        fingerprint = NormalizeFingerprint(fingerprint);
+        lock (_gate)
+        {
+            var next = _messages.Where(m => !(m.Fingerprint == fingerprint && m.Id == id &&
+                m.IsOutbox && m.State == MessageState.Queued)).ToList();
+            if (next.Count == _messages.Count) return false;
+            Commit(next);
+            return true;
+        }
+    }
+
+    /// <summary>Pending messages older than <see cref="OutboxLifetime"/> fail and wait for a manual resend.</summary>
+    public IReadOnlyList<ConversationMessage> ExpireOutbox(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            bool Expired(ConversationMessage m) => m.IsOutbox && m.State == MessageState.Queued && now - m.OutboxSince!.Value > OutboxLifetime;
+            var changed = _messages.Where(Expired).Select(m => m with { State = MessageState.Failed, Error = OutboxExpiredError }).ToArray();
+            if (changed.Length == 0) return changed;
+            Commit(_messages.Select(m => Expired(m) ? m with { State = MessageState.Failed, Error = OutboxExpiredError } : m).ToList());
             return changed;
         }
     }

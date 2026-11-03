@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Windows.Storage;
 using Feige.Core.Storage;
+using Feige.Core.Profiles;
 
 namespace Feige.App.Services;
 
@@ -16,6 +17,11 @@ public sealed class AppSettings
     public SetupProgress Setup => _values.Setup!;
     public bool AutoCheckUpdates => _values.AutoCheckUpdates;
     public bool NotificationsEnabled => _values.NotificationsEnabled;
+    public string AvatarId => AvatarIds.Normalize(_values.AvatarId);
+    public IReadOnlyList<string> ProbeTargets => _values.ProbeTargets ?? [];
+    public bool AllowsProbes => _values.AllowsProbes;
+    /// <summary>Normalized fingerprints of persistent contacts.</summary>
+    public IReadOnlyList<string> TrustedPeers => _values.TrustedPeers ?? [];
     public string? LoadError { get; }
 
     public static AppSettings Load()
@@ -70,12 +76,35 @@ public sealed class AppSettings
 
     public void SaveDeviceName(string name) => Commit(_values with { DeviceName = SetupValidation.DeviceName(name) });
     public void SaveReceiveFolder(string folder) => Commit(_values with { ReceiveFolder = folder });
+    public void SaveAvatarId(string? avatarId) => Commit(_values with { AvatarId = AvatarIds.Normalize(avatarId) });
+    public bool SavePeerAvatarId(string? fingerprint, string? avatarId)
+    {
+        string? normalizedFingerprint = AvatarIds.NormalizeFingerprint(fingerprint);
+        if (normalizedFingerprint is null || !AvatarIds.IsKnown(avatarId)) return false;
+        var peers = new Dictionary<string, string>(_values.PeerAvatarIds ?? new(), StringComparer.Ordinal);
+        if (peers.TryGetValue(normalizedFingerprint, out string? existing) && existing == avatarId) return false;
+        peers[normalizedFingerprint] = avatarId!;
+        if (peers.Count > 256)
+        {
+            foreach (string key in peers.Keys.Take(peers.Count - 256).ToArray()) peers.Remove(key);
+        }
+        try { Commit(_values with { PeerAvatarIds = peers }); return true; }
+        catch (Exception ex) { AppLog.Write("peer avatar cache: " + ex.GetType().Name); return false; }
+    }
+    public string? GetPeerAvatarId(string? fingerprint)
+    {
+        string? normalizedFingerprint = AvatarIds.NormalizeFingerprint(fingerprint);
+        return normalizedFingerprint is not null && _values.PeerAvatarIds?.TryGetValue(normalizedFingerprint, out string? avatarId) == true &&
+               AvatarIds.IsKnown(avatarId) ? avatarId : null;
+    }
     public void SaveAutoCheckUpdates(bool enabled) => Commit(_values with { AutoCheckUpdates = enabled });
     public void SaveNotificationsEnabled(bool enabled) => Commit(_values with { NotificationsEnabled = enabled });
+    public void SaveProbeSettings(string[] targets, bool allowsProbes) => Commit(_values with { ProbeTargets = targets, AllowsProbes = allowsProbes });
+    public void SaveTrustedPeers(string[] fingerprints) => Commit(_values with { TrustedPeers = fingerprints });
     public void SaveProgress(SetupProgress progress) => Commit(_values with { Setup = progress });
-    public void SaveSetup(string name, string folder, bool autoCheckUpdates)
+    public void SaveSetup(string name, string folder, bool autoCheckUpdates, string? avatarId = null)
         => Commit(_values with { DeviceName = SetupValidation.DeviceName(name), ReceiveFolder = folder,
-            AutoCheckUpdates = autoCheckUpdates, Setup = Setup with { Step = 2 } });
+            AvatarId = AvatarIds.Normalize(avatarId ?? AvatarId), AutoCheckUpdates = autoCheckUpdates, Setup = Setup with { Step = 2 } });
 
     public static string DefaultDeviceName() => SetupValidation.DefaultDeviceName(Environment.MachineName);
     /// <summary>Folder name used under Downloads (and by the pre-1.2 Documents default).</summary>

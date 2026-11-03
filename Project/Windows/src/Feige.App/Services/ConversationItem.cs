@@ -14,9 +14,16 @@ public sealed class ConversationItem(string fingerprint, string name) : INotifyP
     public string Fingerprint => _displayName.Fingerprint;
     private string _state = "未连接", _summary = "暂无消息";
     public string Name { get => _displayName.Name; set { if (_displayName.SetName(value)) NameChanged(); } }
+    public string? AvatarId => AppSession.Current.Settings.GetPeerAvatarId(Fingerprint);
+    public Microsoft.UI.Xaml.Media.ImageSource AvatarImage => AvatarCatalog.GetImageSource(AvatarId);
     public void ApplyDiscoveredName(Feige.Core.Discovery.DiscoveredPeer peer)
     {
         if (_displayName.ApplyDiscovery(peer)) NameChanged();
+    }
+    public void RefreshAvatar()
+    {
+        Changed(nameof(AvatarId)); Changed(nameof(AvatarImage));
+        foreach (var message in Messages) message.RefreshAvatar();
     }
     private void NameChanged() { Changed(nameof(Name)); Changed(nameof(AvatarText)); }
     public string State { get => _state; set { _state = value; Changed(nameof(State)); } }
@@ -24,6 +31,16 @@ public sealed class ConversationItem(string fingerprint, string name) : INotifyP
     public string AvatarText => string.IsNullOrWhiteSpace(Name) ? "鸽" : StringInfo.GetNextTextElement(Name.Trim()).ToUpperInvariant();
     public string LastActivityText => Messages.LastOrDefault() is not { } message ? "" :
         message.Entry.At.ToLocalTime().ToString(message.Entry.At.ToLocalTime().Date == DateTime.Today ? "HH:mm" : "MM/dd");
+    private int _unread;
+    public int UnreadCount => _unread;
+    public string UnreadText => _unread > 99 ? "99+" : _unread.ToString(CultureInfo.InvariantCulture);
+    public Visibility UnreadVisibility => _unread > 0 ? Visibility.Visible : Visibility.Collapsed;
+    public void SetUnread(int count)
+    {
+        if (_unread == count) return;
+        _unread = count;
+        Changed(nameof(UnreadCount)); Changed(nameof(UnreadText)); Changed(nameof(UnreadVisibility));
+    }
     public string Draft { get; set; } = "";
     public ObservableCollection<MessageItem> Messages { get; } = [];
     public override string ToString() => Name;
@@ -39,7 +56,10 @@ public sealed class MessageItem(ConversationMessage entry) : INotifyPropertyChan
     public Guid Id => Entry.Id;
     public string Body => Entry.Kind == MessageKind.Text ? Entry.Text : Entry.FileName;
     public string Caption => $"{(Entry.Direction == TransferDirection.Sent ? "我" : Entry.PeerName)} · {Entry.At.ToLocalTime():MM-dd HH:mm}";
+    public Microsoft.UI.Xaml.Media.ImageSource AvatarImage => AvatarCatalog.GetImageSource(Entry.Direction == TransferDirection.Sent
+        ? AppSession.Current.Settings.AvatarId : AppSession.Current.Settings.GetPeerAvatarId(Entry.Fingerprint));
     public HorizontalAlignment Alignment => Entry.Direction == TransferDirection.Sent ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+    public void RefreshAvatar() => PropertyChanged?.Invoke(this, new(nameof(AvatarImage)));
     public Style BubbleStyle => (Style)Application.Current.Resources[
         Entry.Direction == TransferDirection.Sent ? "FeigeSentBubbleStyle" : "FeigeReceivedBubbleStyle"];
     public override string ToString() => Body;
@@ -65,6 +85,7 @@ public sealed class MessageItem(ConversationMessage entry) : INotifyPropertyChan
     public bool CanPreview => Entry.Kind != MessageKind.Text && Format.Kind == PreviewKind.Image && IsCompleted;
     public Visibility ImageVisibility => Entry.Kind != MessageKind.Text && Format.Kind == PreviewKind.Image && IsCompleted ? Visibility.Visible : Visibility.Collapsed;
     public Visibility RetryVisibility => (Entry.State is MessageState.Failed or MessageState.Declined) && Entry.Direction == TransferDirection.Sent ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility CancelVisibility => Entry.IsOutbox && Entry.State == MessageState.Queued ? Visibility.Visible : Visibility.Collapsed;
     public Visibility ProgressVisibility => Entry.Kind != MessageKind.Text && Entry.IsActive ? Visibility.Visible : Visibility.Collapsed;
     public bool CanOpen => Entry.Kind != MessageKind.Text && IsCompleted;
     public double Percent => Entry.Size <= 0 ? 0 : Math.Clamp(_transferred * 100.0 / Entry.Size, 0, 100);
@@ -76,7 +97,7 @@ public sealed class MessageItem(ConversationMessage entry) : INotifyPropertyChan
         ? Visibility.Visible : Visibility.Collapsed;
     public string Status => Entry.State switch
     {
-        MessageState.Queued => "等待发送",
+        MessageState.Queued => Entry.IsOutbox ? "待发送 · 对方连接后自动发送" : "等待发送",
         MessageState.Sending when Entry.Kind != MessageKind.Text && Entry.Direction == TransferDirection.Sent && Entry.Error == "等待对方确认接收" => "等待对方确认接收…",
         MessageState.Sending when Entry.Kind != MessageKind.Text && Entry.Direction == TransferDirection.Received && Entry.Error == "等待确认接收" => "等待确认接收",
         MessageState.Sending when Entry.Kind != MessageKind.Text && Entry.Direction == TransferDirection.Received && Entry.Error == "接收已确认" => "已确认接收，等待传输…",
@@ -91,7 +112,7 @@ public sealed class MessageItem(ConversationMessage entry) : INotifyPropertyChan
     public void Apply(ConversationMessage entry)
     {
         Entry = entry;
-        foreach (var name in new[] { nameof(Body), nameof(Caption), nameof(Status), nameof(RetryVisibility), nameof(ProgressVisibility), nameof(CanOpen), nameof(ImageVisibility), nameof(CanPreview), nameof(SizeText), nameof(AttachmentMetadata), nameof(CompletionVisibility), nameof(AttachmentActionsVisibility), nameof(TextVisibility), nameof(AttachmentVisibility), nameof(FileGlyph), nameof(OpenLabel), nameof(Percent), nameof(CanOpenPreview), nameof(PreviewActionVisibility), nameof(RateText), nameof(RateVisibility), nameof(IncomingDecisionVisibility) })
+        foreach (var name in new[] { nameof(Body), nameof(Caption), nameof(Status), nameof(RetryVisibility), nameof(CancelVisibility), nameof(ProgressVisibility), nameof(CanOpen), nameof(ImageVisibility), nameof(CanPreview), nameof(SizeText), nameof(AttachmentMetadata), nameof(CompletionVisibility), nameof(AttachmentActionsVisibility), nameof(TextVisibility), nameof(AttachmentVisibility), nameof(FileGlyph), nameof(OpenLabel), nameof(Percent), nameof(CanOpenPreview), nameof(PreviewActionVisibility), nameof(RateText), nameof(RateVisibility), nameof(IncomingDecisionVisibility) })
             PropertyChanged?.Invoke(this, new(name));
     }
     public void SetProgress(long bytes, double speedBytesPerSecond = 0)

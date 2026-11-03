@@ -36,7 +36,7 @@ public static class V4PeerConnector
     {
         ArgumentNullException.ThrowIfNull(local);
         ArgumentNullException.ThrowIfNull(candidates);
-        if (protocolVersion is not (V4Offer.CurrentVersion or V4Offer.DurableAbortVersion))
+        if (protocolVersion is not (V4Offer.CurrentVersion or V4Offer.DurableAbortVersion or V4Offer.ResumableVersion))
             throw new ArgumentOutOfRangeException(nameof(protocolVersion));
         if (candidates.Count is < 1 or > MaxCandidates)
             throw new ArgumentException("没有可用地址，或候选地址过多，请刷新设备后重试。", nameof(candidates));

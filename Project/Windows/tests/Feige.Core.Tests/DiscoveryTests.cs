@@ -177,7 +177,7 @@ public sealed class DiscoveryTests
 
         IReadOnlyList<string> v4Txt = FeigeService.BuildTxt("Win-A", fullFingerprint, version: 4);
         Assert.Contains("v=4", v4Txt);
-        Assert.Contains("caps=3,4,5", v4Txt);
+        Assert.Contains("caps=3,4,5,6", v4Txt);
         Assert.Equal(4, FeigeService.ParseProtocolVersion(v4Txt));
         Assert.Equal(3, FeigeService.ParseProtocolVersion(["version=3", "name=Win-A"]));
         Assert.Equal(1, FeigeService.ParseProtocolVersion(txt));
@@ -192,6 +192,21 @@ public sealed class DiscoveryTests
         Assert.Contains(3, macVersions);
         Assert.Contains(4, macVersions);
         Assert.Contains(5, macVersions);
+    }
+
+    [Fact]
+    public void AvatarTxtMetadataIsOptionalAndUnknownIdsAreIgnored()
+    {
+        string fingerprint = new('C', 64);
+        IReadOnlyList<string> advertised = FeigeService.BuildTxt("Win-A", fingerprint, version: 4, avatarId: "fox");
+        Assert.Contains("avatar=fox", advertised);
+        Assert.Equal("fox", FeigeService.ParseAvatarId(advertised));
+
+        IReadOnlyList<string> legacy = ["v=4", "name=Old device", $"fp={fingerprint}", "caps=3,4,5"];
+        Assert.Null(FeigeService.ParseAvatarId(legacy));
+        Assert.Null(FeigeService.ParseAvatarId(["v=4", "name=Peer", "avatar=attacker-controlled"]));
+        Assert.DoesNotContain(FeigeService.BuildTxt("Win-A", fingerprint, version: 4, avatarId: "unknown"),
+            entry => entry.StartsWith("avatar=", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -352,8 +367,8 @@ public sealed class DiscoveryTests
         await WaitUntilAsync(() => a.Peers.Count == 2 && b.Peers.Count == 2,
             "dual-version peers did not discover both remote instances");
 
-        Assert.Equal([3, 5], a.Peers.Select(peer => peer.ProtocolVersion).Order().ToArray());
-        Assert.Equal([3, 5], b.Peers.Select(peer => peer.ProtocolVersion).Order().ToArray());
+        Assert.Equal([3, 6], a.Peers.Select(peer => peer.ProtocolVersion).Order().ToArray());
+        Assert.Equal([3, 6], b.Peers.Select(peer => peer.ProtocolVersion).Order().ToArray());
         Assert.All(a.Peers, peer => Assert.Equal("Same name", peer.DeviceName));
         Assert.All(b.Peers, peer => Assert.Equal("Same name", peer.DeviceName));
         Assert.Equal(51021, a.Peers.Single(peer => peer.ProtocolVersion == 3).EndPoint.Port);

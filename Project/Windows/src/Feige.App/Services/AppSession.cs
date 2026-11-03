@@ -7,6 +7,7 @@ using Feige.Core.Conversations;
 using Feige.Core.Crypto;
 using Feige.Core.Discovery;
 using Feige.Core.Net;
+using Feige.Core.Profiles;
 using Feige.Core.Storage;
 using Feige.Core.Updates;
 using Microsoft.UI.Dispatching;
@@ -58,6 +59,8 @@ public sealed class AppSession
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource> _v4PendingByPeer = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _sendingTextPeers = new(StringComparer.Ordinal);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _sendingFilePeers = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _flushingOutbox = new(StringComparer.Ordinal);
+    private Task? _outboxExpiry;
     private int _v4Connecting;
     private int _v4GroupConnecting;
     private bool _groupRosterSubscribed;
@@ -71,6 +74,10 @@ public sealed class AppSession
     private TaskCompletionSource<bool>? _v3PendingAcceptCompletion;
     private string? _v3PendingAcceptFingerprint;
     private CancellationTokenSource? _networkCts, _networkRefreshDelay;
+    private UnicastProbe? _probe;
+    private CancellationTokenSource? _probeCts;
+    private Task? _probeLoop;
+    private readonly Dictionary<string, ProbedPeer> _probedPeers = new(StringComparer.Ordinal);
     private int _connectionSlot, _sendingFiles, _sendingText;
     private bool V4GroupRoutingReady => Groups is not null;
     private bool _networkReady;
@@ -109,6 +116,55 @@ public sealed class AppSession
     public string FolderStatus { get; private set; } = "等待检查";
     public string NetworkStatus { get; private set; } = "等待身份准备";
     public string? DiscoveryIssue { get; private set; }
+    /// <summary>True when UDP 52526 was taken, so other subnets cannot find this device.</summary>
+    public bool ProbePortUnavailable { get; private set; }
+
+    private UnreadCounter? _unread;
+    private UnreadCounter Unread => _unread ??= new(Path.Combine(AppSettings.AppDataFolder, "unread.json"));
+    /// <summary>The conversation the main window shows: a fingerprint, a group key, or null.</summary>
+    public string? VisibleConversationKey { get; private set; }
+    /// <summary>True while the main window is the foreground window.</summary>
+    public bool WindowActive { get; private set; }
+    /// <summary>Raised on the UI thread whenever any unread count changes.</summary>
+    public event EventHandler? UnreadChanged;
+    public int UnreadCount(string key) => _messages?.IsHidden(key) == true ? 0 : Unread.Get(key);
+    public int DirectUnreadTotal => Unread.Total(key => !key.StartsWith("group:", StringComparison.Ordinal) && _messages?.IsHidden(key) != true);
+    public int GroupUnreadTotal => Unread.Total(key => key.StartsWith("group:", StringComparison.Ordinal));
+    public int UnreadTotal => DirectUnreadTotal + GroupUnreadTotal;
+
+    public void SetVisibleConversation(string? key)
+    {
+        VisibleConversationKey = key;
+        if (key is not null && WindowActive) MarkConversationRead(key);
+    }
+
+    public void SetWindowActive(bool active)
+    {
+        WindowActive = active;
+        if (active && VisibleConversationKey is { } key) MarkConversationRead(key);
+    }
+
+    public void MarkConversationRead(string key)
+    {
+        if (!Unread.Clear(key)) return;
+        RefreshUnread(key);
+    }
+
+    /// <summary>Counts one arrival unless the user is looking at it, and shows a toast for text while the window is inactive.</summary>
+    private void NoteIncoming(string key, string title, string body, bool notify)
+    {
+        if (WindowActive && VisibleConversationKey == key) return;
+        Unread.Increment(key);
+        RefreshUnread(key);
+        if (notify && !WindowActive && Settings.NotificationsEnabled && Notifier.Current.IsAvailable)
+            Notifier.Current.Show(title, body.Length > 120 ? body[..120] : body);
+    }
+
+    private void RefreshUnread(string key)
+    {
+        Conversations.FirstOrDefault(conversation => conversation.Fingerprint == key)?.SetUnread(UnreadCount(key));
+        UnreadChanged?.Invoke(this, EventArgs.Empty);
+    }
     public bool NotificationInvitationPending { get; private set; }
     public bool FirstTransferNoticePending { get; private set; }
     public bool IsStarting { get; private set; }
@@ -134,6 +190,9 @@ public sealed class AppSession
     public bool IsSendingTextTo(ConversationItem? conversation) => conversation is not null && _sendingTextPeers.ContainsKey(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint));
     public bool IsSendingFilesTo(ConversationItem? conversation) => conversation is not null && _sendingFilePeers.ContainsKey(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint));
     public bool CanSend(ConversationItem? conversation) => !IsInstallingUpdate && conversation is not null && IsConnected(conversation);
+    /// <summary>A known direct conversation also accepts messages offline; they wait in the outbox until the peer connects.</summary>
+    public bool CanCompose(ConversationItem? conversation) => !IsInstallingUpdate && conversation is not null && _messages is not null &&
+        (IsConnected(conversation) || AvatarIds.NormalizeFingerprint(conversation.Fingerprint) is not null);
     public void Initialize(DispatcherQueue dispatcher)
     {
         _dispatcher = dispatcher;
@@ -178,9 +237,9 @@ public sealed class AppSession
 
     public void ReloadSettings() { Settings = AppSettings.Load(); Changed(); }
 
-    public void SaveGuideSettings(string name, string folder, bool automaticUpdates)
+    public void SaveGuideSettings(string name, string folder, bool automaticUpdates, string? avatarId = null)
     {
-        Settings.SaveSetup(name, folder, automaticUpdates);
+        Settings.SaveSetup(name, folder, automaticUpdates, avatarId);
         FolderReady = true; FolderStatus = "可以保存文件"; Changed();
     }
 
@@ -226,6 +285,9 @@ public sealed class AppSession
         Conversations.Clear(); ReceivedFiles.Clear(); SentFiles.Clear();
         _inbox = new V3TextInbox(received: _messages.Messages.Where(m => m.Direction == TransferDirection.Received && m.Kind == MessageKind.Text && m.State == MessageState.Received).Select(m => (m.Fingerprint, m.Id)));
         foreach (var message in _messages.Messages) ApplyMessage(message);
+        if (_outboxExpiry is null) _outboxExpiry = RunOutboxExpiryAsync(_lifetime.Token);
+        else _ = ExpireOutboxAsync();
+        UnreadChanged?.Invoke(this, EventArgs.Empty);
         foreach (var draft in ConversationDrafts.Load(AppSettings.AppDataFolder))
             FindConversation(ConversationHistory.NormalizeFingerprint(draft.Fingerprint), draft.Name).Draft = draft.Text;
         _draftsLoaded = true;
@@ -284,6 +346,7 @@ public sealed class AppSession
                 ct.ThrowIfCancellationRequested(); FolderReady = true;
             }
             FolderStatus = "可以保存文件"; Changed();
+            _ = Task.Run(() => ResumableStorageCleanup.RemoveExpired(Settings.ReceiveFolder));
             stage = "network"; NetworkStatus = "正在启动"; Changed();
             ct.ThrowIfCancellationRequested();
             Device = new LocalDevice(Identity, Settings.DeviceName);
@@ -328,6 +391,7 @@ public sealed class AppSession
     private async Task StopNetworkAsync()
     {
         _networkReady = false; _networkCts?.Cancel();
+        await StopProbeAsync();
         if (Discovery is not null) await Discovery.DisposeAsync();
         if (Listener is not null) await Listener.DisposeAsync();
         if (V4Listener is not null) await V4Listener.DisposeAsync();
@@ -357,7 +421,109 @@ public sealed class AppSession
             DiscoveryIssue = "自动发现暂不可用，请检查 VPN/TUN、网络隔离或 UDP 5353 是否可用。仍可手动输入对方的局域网地址和端口。";
             AppLog.Write("discovery unavailable: " + ex.GetType().Name);
         }
+        StartProbe(device, ct);
     }
+
+    private sealed class ProbedPeer(DiscoveredPeer peer)
+    {
+        public DiscoveredPeer Peer { get; set; } = peer;
+        public int MissedRounds { get; set; }
+        public bool SeenThisRound { get; set; } = true;
+    }
+
+    private void StartProbe(LocalDevice device, CancellationToken ct)
+    {
+        var hosts = ProbeTargets.Hosts(Settings.ProbeTargets.ToArray()) ?? [];
+        if (!Settings.AllowsProbes && hosts.Count == 0 || V4ListenPort == 0) return;
+        string fingerprint = device.Fingerprint.Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
+        var probe = new UnicastProbe(new(device.DeviceName, fingerprint, FeigeService.Capabilities, V4ListenPort,
+            AvatarIds.IsKnown(Settings.AvatarId) ? Settings.AvatarId : null), Settings.AllowsProbes);
+        probe.PeerFound += peer => Post(() => RecordProbedPeer(probe, peer));
+        try { probe.Start(); }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+        {
+            AppLog.Write("unicast probe unavailable: " + ex.GetType().Name);
+            _ = probe.DisposeAsync();
+            return;
+        }
+        _probe = probe;
+        ProbePortUnavailable = Settings.AllowsProbes && !probe.CanRespond;
+        if (ProbePortUnavailable) AppLog.Write("unicast probe: port unavailable");
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _probeCts = cancellation;
+        if (hosts.Count > 0) _probeLoop = RunProbeLoopAsync(probe, hosts, cancellation.Token);
+    }
+
+    private async Task RunProbeLoopAsync(UnicastProbe probe, IReadOnlyList<uint> hosts, CancellationToken ct)
+    {
+        try
+        {
+            while (true)
+            {
+                await probe.ScanAsync(hosts, ct);
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                Post(() => { if (ReferenceEquals(_probe, probe)) FinishProbeRound(); });
+                await Task.Delay(TimeSpan.FromSeconds(58), ct);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void RecordProbedPeer(UnicastProbe probe, ProbePeer found)
+    {
+        if (!ReferenceEquals(_probe, probe)) return;
+        var peer = new DiscoveredPeer(new DnsName("Feige4-" + found.Fingerprint[..20]), found.Name, found.Fingerprint, new IPEndPoint(found.Address, found.Port))
+        {
+            ProtocolVersion = found.ProtocolVersions.Where(version => version <= V4Offer.ResumableVersion).DefaultIfEmpty(0).Max(),
+            SupportedVersions = found.ProtocolVersions,
+            AvatarId = AvatarIds.IsKnown(found.AvatarId) ? found.AvatarId : null,
+        };
+        string identity = PeerIdentity(peer);
+        if (_probedPeers.TryGetValue(identity, out var entry)) { entry.Peer = peer; entry.SeenThisRound = true; entry.MissedRounds = 0; }
+        else _probedPeers[identity] = new(peer);
+        var existing = Peers.FirstOrDefault(candidate => PeerIdentity(candidate) == identity);
+        if (existing is null) Peers.Add(peer);
+        else if (_probedPeers.ContainsKey(identity) && !(Discovery?.Peers.Any(candidate => PeerIdentity(candidate) == identity) ?? false))
+            Peers[Peers.IndexOf(existing)] = peer; // mDNS wins whenever it also sees this device.
+        else return;
+        foreach (var conversation in Conversations) conversation.ApplyDiscoveredName(peer);
+        ConnectEligibleGroupPeers();
+    }
+
+    /// <summary>A device disappears after three rounds without a reply.</summary>
+    private void FinishProbeRound()
+    {
+        foreach (var (identity, entry) in _probedPeers.ToArray())
+        {
+            entry.MissedRounds = entry.SeenThisRound ? 0 : entry.MissedRounds + 1;
+            entry.SeenThisRound = false;
+            if (entry.MissedRounds < 3) continue;
+            _probedPeers.Remove(identity);
+            if (Discovery?.Peers.Any(candidate => PeerIdentity(candidate) == identity) ?? false) continue;
+            var existing = Peers.FirstOrDefault(candidate => PeerIdentity(candidate) == identity);
+            if (existing is not null) Peers.Remove(existing);
+        }
+    }
+
+    private async Task StopProbeAsync()
+    {
+        _probeCts?.Cancel();
+        if (_probeLoop is not null) await _probeLoop;
+        if (_probe is not null) await _probe.DisposeAsync();
+        _probeCts?.Dispose();
+        _probe = null; _probeCts = null; _probeLoop = null;
+        _probedPeers.Clear();
+    }
+
+    /// <summary>Saves the subnets and restarts discovery so the first round runs at once.</summary>
+    public async Task SaveProbeSettingsAsync(string[] targets, bool allowsProbes)
+    {
+        string[] cleaned = targets.Select(target => target.Trim()).Where(target => target.Length > 0).ToArray();
+        if (ProbeTargets.Hosts(cleaned) is null) throw new InvalidOperationException("只能填写私网 IPv4 地址或 /24–/32 网段，最多 16 项。");
+        Settings.SaveProbeSettings(cleaned, allowsProbes);
+        if (IsRunning) await RefreshDiscoveryAsync(_lifetime.Token);
+    }
+
     private async Task RefreshDiscoveryAsync(CancellationToken ct)
     {
         await _startup.WaitAsync(ct);
@@ -365,6 +531,7 @@ public sealed class AppSession
         {
             // Rebuild only discovery. Established TCP sessions and their consent remain untouched.
             if (!IsRunning || Device is null || _lifetime.IsCancellationRequested) return;
+            await StopProbeAsync();
             var old = Discovery; Discovery = null;
             if (old is not null)
                 try { await old.DisposeAsync(); } catch (Exception ex) { AppLog.Write("discovery refresh cleanup: " + ex.GetType().Name); }
@@ -379,7 +546,7 @@ public sealed class AppSession
 
     private LanDiscovery CreateDiscovery(LocalDevice device)
     {
-        var discovery = new LanDiscovery(device, ListenPort, V4ListenPort);
+        var discovery = new LanDiscovery(device, ListenPort, V4ListenPort, avatarId: Settings.AvatarId);
         discovery.PeerFound += (_, peer) =>
         {
             Post(() =>
@@ -394,7 +561,9 @@ public sealed class AppSession
                 foreach (var conversation in Conversations) conversation.ApplyDiscoveredName(preferred);
                 var existing = Peers.FirstOrDefault(candidate => PeerIdentity(candidate) == identity);
                 if (existing is not null) Peers[Peers.IndexOf(existing)] = preferred; else Peers.Add(preferred);
+                CacheAvatarForAuthenticatedPeer(preferred.Fingerprint);
                 ConnectEligibleGroupPeers();
+                ConnectTrustedPeers();
             });
         };
         discovery.PeerLost += (_, peer) => Post(() =>
@@ -441,6 +610,133 @@ public sealed class AppSession
         }
     }
 
+    // Persistent contacts: Settings.TrustedPeers holds normalized fingerprints; the planner holds per-run dial state.
+    private readonly TrustedDialPlanner _trustedDial = new();
+    private readonly object _trustedGate = new();
+    private CancellationTokenSource? _trustedDialTimer;
+
+    public bool IsTrustedPeer(string? fingerprint)
+        => AvatarIds.NormalizeFingerprint(fingerprint) is { } key && Settings.TrustedPeers.Contains(key);
+
+    public void SetTrustedPeer(string fingerprint, bool trusted)
+    {
+        if (AvatarIds.NormalizeFingerprint(fingerprint) is not { } key) return;
+        var next = Settings.TrustedPeers.Where(item => item != key).ToList();
+        if (trusted) next.Add(key);
+        Settings.SaveTrustedPeers([.. TrustedDialPlanner.Normalize(next)]);
+        lock (_trustedGate) _trustedDial.Reset(key, clearSuppression: true);
+        Changed();
+        if (trusted) ConnectTrustedPeers();
+    }
+
+    public string TrustedPeerName(string fingerprint)
+    {
+        DiscoveredPeer? peer = Peers.FirstOrDefault(candidate => AvatarIds.NormalizeFingerprint(candidate.Fingerprint) == fingerprint);
+        if (peer is not null) return peer.DisplayName;
+        ConversationItem? conversation = Conversations.FirstOrDefault(item => AvatarIds.NormalizeFingerprint(item.Fingerprint) == fingerprint);
+        return conversation?.Name ?? fingerprint[..12];
+    }
+
+    /// <summary>Approves a persistent contact without a prompt; file approval is unaffected.</summary>
+    private async Task<bool> ConfirmIncomingConnectionAsync(string name, string peerFingerprint, CancellationToken ct)
+    {
+        string? key = AvatarIds.NormalizeFingerprint(peerFingerprint);
+        if (key is not null && Settings.TrustedPeers.Contains(key))
+        {
+            bool suppressed;
+            lock (_trustedGate) suppressed = _trustedDial.IsSuppressed(key);
+            if (!suppressed)
+            {
+                AppLog.Write($"connection auto-approved for persistent contact peer={key[..8]}");
+                return true;
+            }
+        }
+        var consent = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, offerTrust: key is not null, ct);
+        if (consent == ConnectionConsent.AcceptedAndTrusted && key is not null) Post(() => SetTrustedPeer(key, true));
+        return consent != ConnectionConsent.Rejected;
+    }
+
+    private void OnTrustedPeerClosed(string fingerprint)
+    {
+        if (!IsTrustedPeer(fingerprint)) return;
+        lock (_trustedGate) _trustedDial.RecordDisconnect(fingerprint, DateTimeOffset.Now);
+        ConnectTrustedPeers();
+    }
+
+    /// <summary>Dials discovered persistent contacts that have no direct connection, within the 20-peer direct limit.</summary>
+    private void ConnectTrustedPeers()
+    {
+        _trustedDialTimer?.Cancel();
+        _trustedDialTimer?.Dispose();
+        _trustedDialTimer = null;
+        var registry = _v4Connections;
+        if (!IsRunning || Identity is null || registry is null || !Settings.Setup.Ended || Settings.TrustedPeers.Count == 0) return;
+        string local = ConversationHistory.NormalizeFingerprint(Identity.Fingerprint);
+        V3Connection? v3;
+        lock (_v3SlotGate) v3 = _connection;
+        DateTimeOffset now = DateTimeOffset.Now;
+        DateTimeOffset? wake = null;
+        foreach (string key in Settings.TrustedPeers)
+        {
+            bool connected = (registry.TryGet(key, out var active) && active is { IsClosed: false } && registry.IsDirect(key)) ||
+                (v3 is not null && SameFingerprint(v3.PeerFingerprint, key));
+            if (connected || _v4PendingByPeer.ContainsKey(key)) continue;
+            DiscoveredPeer? peer = Peers
+                .Where(candidate => AvatarIds.NormalizeFingerprint(candidate.Fingerprint) == key && candidate.ProtocolVersion >= 3)
+                .OrderByDescending(candidate => candidate.ProtocolVersion)
+                .FirstOrDefault();
+            DateTimeOffset? due;
+            lock (_trustedGate)
+            {
+                if (peer is null) { _trustedDial.MarkUnseen(key); continue; }
+                due = _trustedDial.DueAt(key, local, now);
+            }
+            if (due is not { } dueAt) continue;
+            if (dueAt > now)
+            {
+                if (wake is null || dueAt < wake) wake = dueAt;
+                continue;
+            }
+            if (registry.DirectPeerCount + Volatile.Read(ref _v4Connecting) >= PeerConnectionRegistry<V4Connection>.MaximumDirectPeers) break;
+            _ = DialTrustedPeerAsync(peer!, key);
+        }
+        if (wake is not { } wakeAt) return;
+        var timer = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _trustedDialTimer = timer;
+        _ = WakeTrustedDialAsync(wakeAt - now, timer.Token);
+    }
+
+    private async Task WakeTrustedDialAsync(TimeSpan delay, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(delay < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : delay, ct);
+            Post(ConnectTrustedPeers);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task DialTrustedPeerAsync(DiscoveredPeer peer, string key)
+    {
+        try
+        {
+            await ConnectAsync(peer.EndPoints, peer.ProtocolVersion, key, direct: true, quiet: true);
+            Post(() => { lock (_trustedGate) _trustedDial.Reset(key, clearSuppression: false); });
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            bool rejected = ex is ConnectionRejectedException;
+            AppLog.Write($"persistent contact dial failed peer={key[..8]} type={ex.GetType().Name}");
+            Post(() =>
+            {
+                lock (_trustedGate) _trustedDial.RecordFailure(key, rejected, DateTimeOffset.Now);
+                ConnectTrustedPeers();
+            });
+        }
+    }
+
     private async Task ConnectGroupPeerAsync(DiscoveredPeer peer)
     {
         if (string.IsNullOrWhiteSpace(peer.Fingerprint)) return;
@@ -457,6 +753,21 @@ public sealed class AppSession
         => string.IsNullOrWhiteSpace(peer.Fingerprint)
             ? "instance:" + peer.Instance
             : "fingerprint:" + ConversationHistory.NormalizeFingerprint(peer.Fingerprint);
+
+    /// <summary>Persist cosmetic metadata only when a live authenticated v4 connection proves this full fingerprint.</summary>
+    private void CacheAvatarForAuthenticatedPeer(string? peerFingerprint)
+    {
+        string? fingerprint = AvatarIds.NormalizeFingerprint(peerFingerprint);
+        if (fingerprint is null || _v4Connections is null || !_v4Connections.TryGet(fingerprint, out var connection) ||
+            connection is not { IsClosed: false } || AvatarIds.NormalizeFingerprint(connection.PeerFingerprint) != fingerprint)
+            return;
+        DiscoveredPeer? advertisement = Peers.FirstOrDefault(peer =>
+            AvatarIds.NormalizeFingerprint(peer.Fingerprint) == fingerprint && AvatarIds.IsKnown(peer.AvatarId));
+        if (advertisement is null || !Settings.SavePeerAvatarId(fingerprint, advertisement.AvatarId)) return;
+        foreach (ConversationItem conversation in Conversations.Where(item => AvatarIds.NormalizeFingerprint(item.Fingerprint) == fingerprint))
+            conversation.RefreshAvatar();
+        Changed();
+    }
 
     public async Task RefreshPeersAsync()
     {
@@ -478,7 +789,15 @@ public sealed class AppSession
     }
 
     public Task ConnectAsync(IPEndPoint endpoint) => ConnectAsync([endpoint], 3);
-    public Task ConnectAsync(DiscoveredPeer peer) => peer.ProtocolVersion switch
+    public Task ConnectAsync(DiscoveredPeer peer)
+    {
+        // A manual connect lifts a suppression left by a declined dial or a manual disconnect.
+        if (AvatarIds.NormalizeFingerprint(peer.Fingerprint) is { } trustedKey)
+            lock (_trustedGate) _trustedDial.Reset(trustedKey, clearSuppression: true);
+        return ConnectDiscoveredAsync(peer);
+    }
+
+    private Task ConnectDiscoveredAsync(DiscoveredPeer peer) => peer.ProtocolVersion switch
     {
         3 => ConnectAsync(peer.EndPoints, 3,
             string.IsNullOrWhiteSpace(peer.Fingerprint) ? null : ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
@@ -486,11 +805,13 @@ public sealed class AppSession
         4 => Task.FromException(new InvalidOperationException("发现信息未包含有效的 v4 设备身份，请刷新设备列表后重试。")),
         5 when !string.IsNullOrWhiteSpace(peer.Fingerprint) => ConnectAsync(peer.EndPoints, 5, ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
         5 => Task.FromException(new InvalidOperationException("发现信息未包含有效的 v5 设备身份，请刷新设备列表后重试。")),
+        6 when !string.IsNullOrWhiteSpace(peer.Fingerprint) => ConnectAsync(peer.EndPoints, 6, ConversationHistory.NormalizeFingerprint(peer.Fingerprint)),
+        6 => Task.FromException(new InvalidOperationException("发现信息未包含有效的 v6 设备身份，请刷新设备列表后重试。")),
         _ => Task.FromException(new InvalidOperationException("对方未公布受支持的协议版本，请刷新设备列表后重试。")),
     };
 
     private async Task ConnectAsync(IReadOnlyList<IPEndPoint> endpoints, int protocolVersion, string? expectedFingerprint = null,
-        bool direct = true)
+        bool direct = true, bool quiet = false)
     {
         using var work = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后连接。");
         if (!IsRunning || !Settings.Setup.Ended || Device is null) throw new InvalidOperationException("安全连接尚未准备好，请稍后重试。");
@@ -617,13 +938,14 @@ public sealed class AppSession
                     if (expectedFingerprint is not null && ConversationHistory.NormalizeFingerprint(connection.PeerFingerprint) != expectedFingerprint)
                         throw new InvalidDataException("连接设备身份与发现信息不一致。");
                     attached = await AttachV4Async(connection, cancellation, direct);
+                    if (attached) Post(() => CacheAvatarForAuthenticatedPeer(connection.PeerFingerprint));
                 }
                 catch { connection.Close(); throw; }
             }
         }
         catch (Exception ex)
         {
-            if (direct) Fail(ErrorText.Describe(ex));
+            if (direct && !quiet) Fail(ErrorText.Describe(ex));
             throw;
         }
         finally
@@ -838,7 +1160,7 @@ public sealed class AppSession
                         reserved = true;
                         reservedFingerprint = peerFingerprint;
                         Publish("收到连接请求，等待本机同意…"); Changed();
-                        accepted = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, candidateCancellation.Token);
+                        accepted = await ConfirmIncomingConnectionAsync(name, peerFingerprint, candidateCancellation.Token);
                         if (!accepted) return false;
                         candidateCancellation.Token.ThrowIfCancellationRequested();
                         return true;
@@ -848,7 +1170,7 @@ public sealed class AppSession
                     lock (_v3SlotGate) active = _connection;
                     if (active is null || !SameFingerprint(active.PeerFingerprint, fingerprint)) return false;
                     Publish("收到已连接设备的重连请求，等待本机同意…"); Changed();
-                    accepted = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, candidateCancellation.Token);
+                    accepted = await ConfirmIncomingConnectionAsync(name, peerFingerprint, candidateCancellation.Token);
                     if (!accepted) return false;
                     candidateCancellation.Token.ThrowIfCancellationRequested();
 
@@ -927,14 +1249,14 @@ public sealed class AppSession
             V4Connection? candidate = null;
             try
             {
-                candidate = await V4Listener!.AcceptAsync(() => Device!, async (name, ct) =>
+                candidate = await V4Listener!.AcceptAsync(() => Device!, async (name, peerFingerprint, ct) =>
                 {
                     if (!Settings.Setup.Ended || !IsRunning || _v4Connections is null ||
                         Volatile.Read(ref _networkPathRefreshPending) != 0) return false;
                     acceptingWork = _updateWork.TryEnter();
                     if (acceptingWork is null) return false;
                     Publish("收到 v4 连接请求，等待本机同意…"); Changed();
-                    bool accepted = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, ct);
+                    bool accepted = await ConfirmIncomingConnectionAsync(name, peerFingerprint, ct);
                     return accepted && Volatile.Read(ref _networkPathRefreshPending) == 0;
                 }, cancellation.Token);
                 cancellation.Token.ThrowIfCancellationRequested();
@@ -945,6 +1267,7 @@ public sealed class AppSession
                 }
                 AppLog.Write($"v4 accept: mounted peer={candidate.PeerFingerprint[..Math.Min(8, candidate.PeerFingerprint.Length)]}");
                 attached = await AttachV4Async(candidate, cancellation);
+                if (attached) Post(() => CacheAvatarForAuthenticatedPeer(candidate.PeerFingerprint));
                 AppLog.Write($"v4 accept: attached={attached}");
                 if (!attached) candidate.Close();
             }
@@ -1115,6 +1438,7 @@ public sealed class AppSession
                     _connection = connection; ActiveFingerprint = fingerprint;
                     Publish("已连接 · " + connection.PeerName); Changed();
                     committed = true;
+                    KickOutbox(fingerprint);
                 }
             });
             runnerStart.TrySetResult(committed);
@@ -1150,8 +1474,8 @@ public sealed class AppSession
             IDisposable? incomingWork = _updateWork.TryEnter();
             if (incomingWork is null) return false;
             var message = new ConversationMessage(file.TransferID, fingerprint, connection.PeerName, TransferDirection.Received,
-                file.Kind == "image" ? MessageKind.Image : MessageKind.File, MessageState.Sending, DateTimeOffset.Now,
-                FileName: file.FileName, Size: file.Size, Error: "等待确认接收");
+                file.Kind == "image" && file.Folder is null ? MessageKind.Image : MessageKind.File, MessageState.Sending, DateTimeOffset.Now,
+                FileName: file.DisplayName, Size: file.DisplaySize, Error: "等待确认接收");
             try
             {
                 await SaveAsync(message);
@@ -1217,7 +1541,7 @@ public sealed class AppSession
                 receiveSpeed = Math.Max(0, bytes - receiveSampleBytes) * 1000.0 / elapsed;
                 receiveSampleBytes = bytes; receiveSampleAt = now;
             }
-            if (bytes != 0 && bytes != file.Size && now - lastReceiveUpdate < 150) return;
+            if (bytes != 0 && bytes != file.DisplaySize && now - lastReceiveUpdate < 150) return;
             lastReceiveUpdate = now;
             double sampledSpeed = receiveSpeed;
             Post(() =>
@@ -1227,8 +1551,8 @@ public sealed class AppSession
                 if (item is null)
                 {
                     item = new MessageItem(new(file.TransferID, fingerprint, connection.PeerName, TransferDirection.Received,
-                        file.Kind == "image" ? MessageKind.Image : MessageKind.File, MessageState.Sending, DateTimeOffset.Now,
-                        FileName: file.FileName, Size: file.Size));
+                        file.Kind == "image" && file.Folder is null ? MessageKind.Image : MessageKind.File, MessageState.Sending, DateTimeOffset.Now,
+                        FileName: file.DisplayName, Size: file.DisplaySize));
                     conversation.Messages.Add(item);
                 }
                 else if (item.Entry.Error == "接收已确认") item.Apply(item.Entry with { Error = "" });
@@ -1237,12 +1561,14 @@ public sealed class AppSession
         };
         connection.FileReceived = async (file, path) =>
         {
+            // A folder arrives once, as its created root directory.
+            string receivedName = file.Folder is null ? file.FileName : Path.GetFileName(path);
             try
             {
                 await SaveAsync(new(file.TransferID, fingerprint, connection.PeerName, TransferDirection.Received,
-                    file.Kind == "image" ? MessageKind.Image : MessageKind.File, MessageState.Received, DateTimeOffset.Now,
-                    FileName: file.FileName, Path: path, Size: file.Size));
-                await RecordFileAsync(TransferDirection.Received, new(file.FileName, path, file.Size, connection.PeerName, DateTimeOffset.Now));
+                    file.Kind == "image" && file.Folder is null ? MessageKind.Image : MessageKind.File, MessageState.Received, DateTimeOffset.Now,
+                    FileName: receivedName, Path: path, Size: file.DisplaySize));
+                await RecordFileAsync(TransferDirection.Received, new(receivedName, path, file.DisplaySize, connection.PeerName, DateTimeOffset.Now));
             }
             finally
             {
@@ -1298,6 +1624,7 @@ public sealed class AppSession
                         var conversation = FindConversation(fingerprint, connection.PeerName);
                         conversation.Name = connection.PeerName; conversation.State = "已连接";
                         Publish("已连接 · " + connection.PeerName);
+                        KickOutbox(fingerprint);
                     }
                     else
                     {
@@ -1338,7 +1665,7 @@ public sealed class AppSession
             connection.Close();
             try { await FinishConnectionAsync(fingerprint, failed, connection); }
             catch (Exception ex) { AppLog.Write($"v3 finish failed: {ex.GetType().Name}"); }
-            finally { cancellation.Dispose(); }
+            finally { cancellation.Dispose(); Post(() => OnTrustedPeerClosed(fingerprint)); }
         }
     }
 
@@ -1372,6 +1699,7 @@ public sealed class AppSession
             }
             await FinishConnectionAsync(fingerprint, failed, connection);
             cancellation.Dispose();
+            Post(() => OnTrustedPeerClosed(fingerprint));
         }
     }
 
@@ -1423,7 +1751,7 @@ public sealed class AppSession
             if (conversation is not null && !peerStillConnected)
             {
                 conversation.State = "未连接";
-                foreach (var item in conversation.Messages.Where(m => m.Entry.IsActive)) item.Apply(item.Entry with { State = MessageState.Failed, Error = "连接已断开。" });
+                foreach (var item in conversation.Messages.Where(m => m.Entry.IsActive)) item.Apply(item.Entry.Interrupted("连接已断开。"));
             }
             bool removedV3 = false;
             lock (_v3SlotGate)
@@ -1455,6 +1783,8 @@ public sealed class AppSession
     public async Task DisconnectAsync(ConversationItem? conversation = null)
     {
         string? fingerprint = conversation is null ? null : ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        // Only the conversation-level disconnect is user-initiated; it stops automatic redialing for this run.
+        if (fingerprint is not null && IsTrustedPeer(fingerprint)) lock (_trustedGate) _trustedDial.Suppress(fingerprint);
         Task? pendingV3Accept = CancelV3PendingAccept(fingerprint);
         var (targetsActiveV3Connection, v3SlotCompletion, v3Cancellation, v3ActiveConnection) = GetV3SlotDrain(fingerprint);
         var runners = new List<Task>();
@@ -1507,13 +1837,12 @@ public sealed class AppSession
         return true;
     }
 
-    private (V3Connection? V3, V4Connection? V4) RequireConnection(ConversationItem conversation)
+    private (V3Connection? V3, V4Connection? V4)? TryConnection(ConversationItem conversation)
     {
-        if (IsInstallingUpdate || conversation is null) throw new InvalidOperationException("请先连接当前设备；查看历史不会切换活动连接。");
         string fingerprint = ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
         if (_connection is not null && SameFingerprint(_connection.PeerFingerprint, fingerprint)) return (_connection, null);
         if (_v4Connections?.TryGet(fingerprint, out var v4) == true && v4 is not null) return (null, v4);
-        throw new InvalidOperationException("请先连接当前设备；查看历史不会切换活动连接。");
+        return null;
     }
 
     private bool IsCurrent((V3Connection? V3, V4Connection? V4) connection)
@@ -1523,32 +1852,83 @@ public sealed class AppSession
     public async Task SendTextAsync(ConversationItem conversation, string text, MessageItem? retry = null)
     {
         using var work = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后发送。");
-        var connection = RequireConnection(conversation);
-        string peerName = connection.V3?.PeerName ?? connection.V4!.PeerName;
+        if (IsInstallingUpdate || conversation is null || _messages is null) throw new InvalidOperationException("请先连接当前设备；查看历史不会切换活动连接。");
         if (retry is not null && (retry.Entry.Fingerprint != conversation.Fingerprint || retry.Entry.Direction != TransferDirection.Sent || retry.Entry.Kind != MessageKind.Text))
             throw new InvalidOperationException("这条消息属于其他会话。");
         var id = retry?.Id ?? Guid.NewGuid(); new V3Text(id, text).Validate();
-        string sendFingerprint = ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
+        // Earlier pending messages go first, so a new message joins the outbox behind them.
+        if (TryConnection(conversation) is not { } connection || _messages.OutboxCount(conversation.Fingerprint) > 0)
+        {
+            await EnqueueOutboxAsync([new ConversationMessage(id, conversation.Fingerprint, OutboxPeerName(conversation), TransferDirection.Sent,
+                MessageKind.Text, MessageState.Queued, retry?.Entry.At ?? DateTimeOffset.Now, Text: text, OutboxSince: DateTimeOffset.Now)]);
+            return;
+        }
+        string peerName = connection.V3?.PeerName ?? connection.V4!.PeerName;
+        try
+        {
+            await DeliverTextAsync(connection, new ConversationMessage(id, conversation.Fingerprint, peerName, TransferDirection.Sent,
+                MessageKind.Text, MessageState.Sending, retry?.Entry.At ?? DateTimeOffset.Now, Text: text, OutboxSince: retry?.Entry.OutboxSince));
+        }
+        finally { KickOutbox(conversation.Fingerprint); }
+    }
+
+    private async Task DeliverTextAsync((V3Connection? V3, V4Connection? V4) connection, ConversationMessage message)
+    {
+        string sendFingerprint = ConversationHistory.NormalizeFingerprint(message.Fingerprint);
         if (!_sendingTextPeers.TryAdd(sendFingerprint, 0)) throw new InvalidOperationException("上一条文字仍在等待回执。");
         Interlocked.Increment(ref _sendingText);
         Changed();
-        var message = new ConversationMessage(id, conversation.Fingerprint, peerName, TransferDirection.Sent, MessageKind.Text,
-            MessageState.Sending, retry?.Entry.At ?? DateTimeOffset.Now, Text: text);
+        message = message with { State = MessageState.Sending, Error = "" };
         try
         {
             await SaveAsync(message);
-            if (connection.V3 is not null) await connection.V3.SendTextAsync(text, id, _lifetime.Token);
-            else await connection.V4!.SendTextAsync(text, id, _lifetime.Token);
+            if (connection.V3 is not null) await connection.V3.SendTextAsync(message.Text, message.Id, _lifetime.Token);
+            else await connection.V4!.SendTextAsync(message.Text, message.Id, _lifetime.Token);
             await SaveAsync(message with { State = MessageState.Delivered });
         }
-        catch (Exception ex) { await MarkFailedAsync(message, ex); throw; }
+        catch (Exception ex) { await MarkFailedAsync(message, ex, connection); throw; }
         finally { _sendingTextPeers.TryRemove(sendFingerprint, out _); Interlocked.Decrement(ref _sendingText); Changed(); }
     }
 
     public async Task SendFilesAsync(ConversationItem conversation, IReadOnlyList<string> paths, bool images = false)
     {
         using var work = _updateWork.TryEnter() ?? throw new InvalidOperationException("正在准备安装更新，请稍后发送。");
-        var connection = RequireConnection(conversation);
+        if (IsInstallingUpdate || conversation is null || _messages is null) throw new InvalidOperationException("请先连接当前设备；查看历史不会切换活动连接。");
+        var connection = TryConnection(conversation);
+        // Earlier pending messages go first, so new attachments join the outbox behind them.
+        bool offline = connection is null || _messages.OutboxCount(conversation.Fingerprint) > 0;
+        string peerName = connection is { } active ? active.V3?.PeerName ?? active.V4!.PeerName : OutboxPeerName(conversation);
+        bool[] folders = paths.Select(Directory.Exists).ToArray();
+        if (!offline && folders.Contains(true) && connection!.Value.V4 is not { SupportsResume: true })
+            throw new InvalidOperationException("对方版本不支持发送文件夹，请让对方升级后再试，或打包后发送。");
+        DateTimeOffset? outboxSince = offline ? DateTimeOffset.Now : null;
+        var messages = new List<ConversationMessage>();
+        for (int index = 0; index < paths.Count; index++)
+        {
+            string path = paths[index];
+            // A folder is one message; listing it first also rejects empty or oversized folders before anything is queued.
+            messages.Add(folders[index]
+                ? new ConversationMessage(Guid.NewGuid(), conversation.Fingerprint, peerName, TransferDirection.Sent,
+                    MessageKind.File, MessageState.Queued, DateTimeOffset.Now,
+                    FileName: Path.GetFileName(Path.TrimEndingDirectorySeparator(path)), Path: path,
+                    Size: await Task.Run(() => FolderEnumerator.Entries(path).Sum(entry => entry.Size)), OutboxSince: outboxSince)
+                : new ConversationMessage(Guid.NewGuid(), conversation.Fingerprint, peerName, TransferDirection.Sent,
+                    images || IsImage(path) ? MessageKind.Image : MessageKind.File, MessageState.Queued, DateTimeOffset.Now,
+                    FileName: Path.GetFileName(path), Path: path, Size: new FileInfo(path).Length, OutboxSince: outboxSince));
+        }
+        if (offline)
+        {
+            await EnqueueOutboxAsync(messages);
+            return;
+        }
+        try { await DeliverFilesAsync(conversation, connection!.Value, messages, saveFirst: true); }
+        finally { KickOutbox(conversation.Fingerprint); }
+    }
+
+    /// <summary>Sends attachments one at a time; <paramref name="saveFirst"/> is false for outbox messages already stored.</summary>
+    private async Task DeliverFilesAsync(ConversationItem conversation, (V3Connection? V3, V4Connection? V4) connection,
+        IReadOnlyList<ConversationMessage> messages, bool saveFirst)
+    {
         string peerName = connection.V3?.PeerName ?? connection.V4!.PeerName;
         string sendFingerprint = ConversationHistory.NormalizeFingerprint(conversation.Fingerprint);
         if (!_sendingFilePeers.TryAdd(sendFingerprint, 0)) throw new InvalidOperationException("请等当前这批附件发送完成。");
@@ -1557,13 +1937,10 @@ public sealed class AppSession
         var queued = new List<ConversationMessage>();
         try
         {
-            foreach (string path in paths)
+            foreach (var message in messages)
             {
-                var info = new FileInfo(path);
-                var message = new ConversationMessage(Guid.NewGuid(), conversation.Fingerprint, peerName, TransferDirection.Sent,
-                    images || IsImage(path) ? MessageKind.Image : MessageKind.File, MessageState.Queued, DateTimeOffset.Now,
-                    FileName: info.Name, Path: path, Size: info.Length);
-                await SaveAsync(message); queued.Add(message);
+                if (saveFirst) await SaveAsync(message);
+                queued.Add(message);
             }
             foreach (var message in queued)
             {
@@ -1590,20 +1967,27 @@ public sealed class AppSession
                         Post(() => conversation.Messages.FirstOrDefault(m => m.Id == message.Id && m.Entry.Direction == TransferDirection.Sent)?.SetProgress(bytes, sampledSpeed));
                         Post(() => ProgressChanged?.Invoke(this, new(message.FileName, bytes, total, "正在发送…")));
                     };
-                    Task<V3File> sendTask = connection.V3 is not null
-                        ? connection.V3.SendFileAsync(message.Path, message.Kind == MessageKind.Image ? "image" : "file", message.Id, reportProgress, _lifetime.Token)
-                        : connection.V4!.SendFileAsync(message.Path, message.Kind == MessageKind.Image ? "image" : "file", message.Id, reportProgress, _lifetime.Token);
-                    var sent = await sendTask;
+                    long sentSize;
+                    if (Directory.Exists(message.Path))
+                        sentSize = (await connection.V4!.SendFolderAsync(message.Path, message.Id, reportProgress, _lifetime.Token)).TotalBytes;
+                    else
+                    {
+                        Task<V3File> sendTask = connection.V3 is not null
+                            ? connection.V3.SendFileAsync(message.Path, message.Kind == MessageKind.Image ? "image" : "file", message.Id, reportProgress, _lifetime.Token)
+                            : connection.V4!.SendFileAsync(message.Path, message.Kind == MessageKind.Image ? "image" : "file", message.Id, reportProgress, _lifetime.Token);
+                        sentSize = (await sendTask).Size;
+                    }
                     var currentMessage = _messages!.Messages.FirstOrDefault(m => m.Id == message.Id && m.Fingerprint == message.Fingerprint && m.Direction == TransferDirection.Sent) ?? message;
-                    await SaveAsync(currentMessage with { State = MessageState.Delivered, Error = "", Size = sent.Size });
-                    await RecordFileAsync(TransferDirection.Sent, new(message.FileName, message.Path, sent.Size, peerName, DateTimeOffset.Now));
+                    await SaveAsync(currentMessage with { State = MessageState.Delivered, Error = "", Size = sentSize });
+                    await RecordFileAsync(TransferDirection.Sent, new(message.FileName, message.Path, sentSize, peerName, DateTimeOffset.Now));
                 }
                 catch (Exception ex)
                 {
                     var current = _messages!.Messages.FirstOrDefault(m => m.Id == message.Id && m.Fingerprint == message.Fingerprint && m.Direction == TransferDirection.Sent) ?? message;
+                    // A declined file is final; it is never retried from the outbox.
                     if (ex is IOException { Message: "已拒绝接收文件。" })
                         await SaveAsync(current with { State = MessageState.Declined, Error = "" });
-                    else if (current.State != MessageState.Declined) await MarkFailedAsync(current, ex);
+                    else if (current.State != MessageState.Declined) await MarkFailedAsync(current, ex, connection);
                     throw;
                 }
             }
@@ -1613,26 +1997,110 @@ public sealed class AppSession
             foreach (var message in queued)
             {
                 var current = _messages!.Messages.FirstOrDefault(m => m.Id == message.Id && m.Fingerprint == message.Fingerprint && m.Direction == TransferDirection.Sent);
-                if (current?.IsActive == true) await MarkFailedAsync(current, ex);
+                if (current?.IsActive == true) await MarkFailedAsync(current, ex, connection);
             }
             throw;
         }
         finally { _sendingFilePeers.TryRemove(sendFingerprint, out _); Interlocked.Decrement(ref _sendingFiles); Changed(); }
     }
 
-    public static bool IsImage(string path) => new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
-    private async Task MarkFailedAsync(ConversationMessage message, Exception error)
+    // Offline outbox: direct messages written while the peer is not connected, delivered in order once it connects.
+    private string OutboxPeerName(ConversationItem conversation)
+        => string.IsNullOrWhiteSpace(conversation.Name) ? TrustedPeerName(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint)) : conversation.Name;
+
+    private async Task EnqueueOutboxAsync(IReadOnlyList<ConversationMessage> messages)
     {
-        var failed = message with { State = MessageState.Failed, Error = ErrorText.Describe(error) };
+        if (AvatarIds.NormalizeFingerprint(messages[0].Fingerprint) is null) throw new InvalidOperationException("请先连接当前设备。");
+        await Task.Run(() => _messages!.Enqueue(messages));
+        await OnUiAsync(() => { foreach (var message in messages) ApplyMessage(message); });
+        KickOutbox(messages[0].Fingerprint);
+    }
+
+    public async Task CancelOutboxAsync(ConversationItem conversation, MessageItem item)
+    {
+        if (_messages is null || item.Entry.Fingerprint != conversation.Fingerprint) return;
+        if (!await Task.Run(() => _messages.CancelOutbox(conversation.Fingerprint, item.Id)))
+            throw new InvalidOperationException("这条消息已开始发送，无法取消。");
+        await OnUiAsync(() => { conversation.Messages.Remove(item); Changed(); });
+    }
+
+    private void KickOutbox(string fingerprint) => Post(() => _ = FlushOutboxAsync(ConversationHistory.NormalizeFingerprint(fingerprint)));
+
+    private async Task ExpireOutboxAsync()
+    {
+        var expired = await Task.Run(() => _messages!.ExpireOutbox(DateTimeOffset.Now));
+        if (expired.Count > 0) await OnUiAsync(() => { foreach (var message in expired) ApplyMessage(message); });
+    }
+
+    /// <summary>Checks at startup and then hourly, so a pending message expires even without connection events.</summary>
+    private async Task RunOutboxExpiryAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromHours(1));
+            do await ExpireOutboxAsync(); while (await timer.WaitForNextTickAsync(ct));
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { AppLog.Write("outbox expiry: " + ex.GetType().Name); }
+    }
+
+    /// <summary>Delivers pending messages one at a time, oldest first. Only persistent contacts are dialed for it;
+    /// other peers receive pending messages once either side connects.</summary>
+    private async Task FlushOutboxAsync(string fingerprint)
+    {
+        if (_messages is null || !_flushingOutbox.TryAdd(fingerprint, 0)) return;
+        try
+        {
+            await ExpireOutboxAsync();
+            while (!_lifetime.IsCancellationRequested && _messages.NextOutbox(fingerprint) is { } next)
+            {
+                ConversationItem? conversation = null;
+                await OnUiAsync(() => conversation = FindConversation(fingerprint, next.PeerName));
+                if (TryConnection(conversation!) is not { } connection) { Post(ConnectTrustedPeers); return; }
+                if (_sendingTextPeers.ContainsKey(fingerprint) || _sendingFilePeers.ContainsKey(fingerprint)) return;
+                using var work = _updateWork.TryEnter();
+                if (work is null || IsInstallingUpdate) return;
+                try
+                {
+                    if (next.Kind == MessageKind.Text) await DeliverTextAsync(connection, next);
+                    else if (!File.Exists(next.Path) && !Directory.Exists(next.Path))
+                        await SaveAsync(next with { State = MessageState.Failed, Error = "源文件已不存在，无法发送。" });
+                    else if (Directory.Exists(next.Path) && connection.V4 is not { SupportsResume: true })
+                        await SaveAsync(next with { State = MessageState.Failed, Error = "对方版本不支持接收文件夹。" });
+                    else await DeliverFilesAsync(conversation!, connection, [next], saveFirst: false);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Write($"outbox delivery stopped peer={fingerprint[..8]} type={ex.GetType().Name}");
+                    // A lost connection leaves the message pending for the next one; a final failure moves on.
+                    if (!IsCurrent(connection) || _messages.NextOutbox(fingerprint)?.Id == next.Id) return;
+                }
+            }
+        }
+        finally { _flushingOutbox.TryRemove(fingerprint, out _); }
+    }
+
+    public static bool IsImage(string path) => new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+    private async Task MarkFailedAsync(ConversationMessage message, Exception error, (V3Connection? V3, V4Connection? V4)? connection = null)
+    {
+        // An outbox message interrupted by a lost connection waits for the next one; any other failure is final.
+        var failed = connection is { } sent && !IsCurrent(sent)
+            ? message.Interrupted(ErrorText.Describe(error))
+            : message with { State = MessageState.Failed, Error = ErrorText.Describe(error) };
         try { await SaveAsync(failed); }
         catch { await OnUiAsync(() => ApplyMessage(failed)); }
     }
     private async Task SaveAsync(ConversationMessage message)
     {
+        bool arrived = message.Direction == TransferDirection.Received && message.State == MessageState.Received &&
+            _messages!.Messages.FirstOrDefault(m => m.Id == message.Id && m.Fingerprint == message.Fingerprint && m.Direction == message.Direction)?.State != MessageState.Received;
         await Task.Run(() => _messages!.Upsert(message));
         await OnUiAsync(() =>
         {
             ApplyMessage(message);
+            if (arrived)
+                NoteIncoming(message.Fingerprint, message.PeerName, message.Kind == MessageKind.Text ? message.Text : message.FileName,
+                    notify: message.Kind == MessageKind.Text);
             if (message.State is MessageState.Delivered or MessageState.Received) RecordFirstCompletion();
         });
     }
@@ -1673,6 +2141,7 @@ public sealed class AppSession
         var conversation = FindConversation(message.Fingerprint, message.PeerName);
         var existing = conversation.Messages.FirstOrDefault(m => m.Id == message.Id && m.Entry.Direction == message.Direction);
         if (existing is null) conversation.Messages.Add(new(message)); else existing.Apply(message);
+        conversation.SetUnread(UnreadCount(conversation.Fingerprint));
         conversation.Summary = message.Kind == MessageKind.Text ? message.Text.ReplaceLineEndings(" ") : message.FileName;
         // Mirror the durable retention window while preserving all active cards.
         var retained = _messages!.Messages.Select(m => (m.Fingerprint, m.Direction, m.Id)).ToHashSet();
@@ -1692,6 +2161,14 @@ public sealed class AppSession
 
     private void OnGroupEventReceived(object? sender, GroupEvent groupEvent)
     {
+        if (groupEvent.Kind is "text" or "file" && groupEvent.Message is { } groupMessage)
+        {
+            var group = Groups?.Store.GetGroup(groupEvent.GroupID);
+            string senderName = group?.Members.FirstOrDefault(member => SameFingerprint(member.Fingerprint, groupEvent.PeerFingerprint))?.DisplayName
+                ?? groupEvent.PeerFingerprint;
+            NoteIncoming(UnreadCounter.GroupKey(groupEvent.GroupID), $"{group?.Name ?? "群聊"} · {senderName}",
+                groupMessage.Text ?? groupMessage.FileMetadata?.FileName ?? "新消息", notify: groupEvent.Kind == "text");
+        }
         if (groupEvent.Kind != "file" || groupEvent.FilePath is null ||
             groupEvent.Message?.FileMetadata is not { } file) return;
 
@@ -1715,6 +2192,7 @@ public sealed class AppSession
     {
         if (_messages is null) throw new InvalidOperationException("本机记录尚未准备好。");
         await Task.Run(() => _messages.SetHidden(conversation.Fingerprint, hidden));
+        RefreshUnread(conversation.Fingerprint);
         Changed();
     }
 
@@ -1761,6 +2239,12 @@ public sealed class AppSession
         string name = SetupValidation.DeviceName(value);
         Settings.SaveDeviceName(name);
         if (Identity is not null) Device = new LocalDevice(Identity, name);
+        if (IsRunning) await RefreshDiscoveryAsync(_lifetime.Token);
+        Changed();
+    }
+    public async Task UpdateAvatarIdAsync(string? avatarId)
+    {
+        Settings.SaveAvatarId(avatarId);
         if (IsRunning) await RefreshDiscoveryAsync(_lifetime.Token);
         Changed();
     }

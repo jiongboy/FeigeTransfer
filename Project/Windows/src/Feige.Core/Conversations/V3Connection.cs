@@ -84,7 +84,7 @@ public sealed class V3Connection : IAsyncDisposable
             {
                 var record = await connection.ReadRecordAsync(TimeSpan.FromMinutes(5), consent.Token);
                 if (record.Type != 8 || record.Payload.Length != 1 || record.Payload[0] > 1) throw new InvalidDataException("连接回执无效。");
-                if (record.Payload[0] == 0) throw new InvalidOperationException("对方拒绝了连接。");
+                if (record.Payload[0] == 0) throw new ConnectionRejectedException();
             }
             else
             {

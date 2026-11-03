@@ -14,7 +14,7 @@ The current shared protocol target is [protocol v3](ProtocolV3.md), with interac
 ## 2. Product and consent
 
 - Prepare the local device identity and validate signing access before enabling discovery, listening or connections. If preparation fails, provide retry without blocking the UI.
-- The receiver explicitly approves one incoming connection. That approval authorizes text, images and files in that live connection. Disconnect revokes approval; reconnect requires a new approval.
+- The receiver explicitly approves one incoming connection. That approval authorizes text, images and files in that live connection. Disconnect revokes approval; reconnect requires a new approval unless the user marked that exact full fingerprint as a persistent contact. That local, revocable mark auto-approves the connection only; it never skips per-file receive approval.
 - Do not create receive files or process application messages before consent. Machine-level readiness acknowledgements are not extra user approval.
 - There is no pairing password, SAS re-entry or per-file approval flow. Without an out-of-band SAS confirmation, do not claim resistance to a malicious device impersonating a displayed name.
 - Do not impose product-level single-file size, batch-count or total-transfer-time limits. Support empty files; retain filesystem, disk, frame memory, concurrency and idle-I/O bounds. An 8192-byte text limit is a message-frame limit, not an attachment limit.
@@ -34,10 +34,10 @@ The current shared protocol target is [protocol v3](ProtocolV3.md), with interac
 
 - Stream each file once for reading, sending, receiving, writing and SHA-256 calculation. Do not preload entire files. Preserve original images; generate bounded thumbnails in the background.
 - Prevent path traversal, symlink attacks and platform-invalid paths. Never overwrite an existing target. Acknowledge and record success only after digest/size validation, flush and atomic commit.
-- Mark text delivered only after the receiver persists it and returns a matching UUID receipt; delivery is not read status. Deduplicate text retries. File retries are not resumable and do not provide exactly-once guarantees.
+- Mark text delivered only after the receiver persists it and returns a matching UUID receipt; delivery is not read status. Deduplicate text retries. File retries resume only on direct v6 connections (see [Protocol v6](ProtocolV6.md)) and do not provide exactly-once guarantees.
 - Disconnect, failure and cancellation must never create false success. Keep committed files; remove uncommitted temporary files. If cancelling an attachment closes the live connection, present that consistently on both clients.
 - Group conversations are keyed by group ID and members by full identity fingerprint, never displayed name. Direct conversations are keyed by peer fingerprint. Switching views must not misroute a message; retention must keep active queued items.
-- Logs must not contain login passwords, message/file contents, private key material or sensitive full paths. Local conversation data and diagnostic logs have distinct retention/protection needs. There is no cloud sync or offline delivery.
+- Logs must not contain login passwords, message/file contents, private key material or sensitive full paths. Local conversation data and diagnostic logs have distinct retention/protection needs. There is no cloud sync or server-side offline delivery; the only offline behavior is the sender-local direct-message queue in the [collaboration enhancement plan](CollaborationEnhancementPlan.md).
 
 ## 5. UI and window behavior
 
@@ -57,7 +57,7 @@ All Windows and macOS deliverables go to repository-adjacent `Release/`, which i
 | --- | --- |
 | Public vectors | Both implementations independently reproduce v3 transcript, signatures, HKDF, GCM, UUIDs and digests; retain v1 vectors separately. |
 | Interoperability | Mac→Windows and Windows→Mac discovery, one-time consent, text, original images, empty/large files and multiple attachments. |
-| Concurrency/reconnect | Simultaneous duplex transfers with chat; reconnect requires consent and creates new ephemeral keys/sequences. |
+| Concurrency/reconnect | Simultaneous duplex transfers with chat; reconnect requires consent or a persistent-contact mark and creates new ephemeral keys/sequences. |
 | Failure behavior | Reject, cancel, disconnect, timeout, malformed IDs/offsets/digests, disk-full, revoked permissions, duplicate names and traversal. |
 | Native UI | Credential prompts, IME, drag/drop, preview/open, conversation isolation, appearance, DPI and window reopen. |
 | Special environments | Firewall, LAN permissions, multiple interfaces, VPN/proxy, isolated Wi-Fi and sleep/resume. |

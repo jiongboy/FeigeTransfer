@@ -15,6 +15,24 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-03 协作增强五项（跨网段、未读、常驻联系人、v6 文件夹与续传、离线待发）
+
+- **跨网段**：`Feige.Core/Discovery/UnicastProbe.cs` 单播探测与私网来源过滤，设置页可编辑探测目标。
+- **未读与通知**：`Storage/UnreadCounter.cs` 本机计数；`TrayIcon.cs` 托盘未读与系统通知。
+- **常驻联系人**：`TrustedDialPlanner` 管理退避（30 秒/1/5/30 分钟）、对称等待 10 秒和拒绝后暂停；`ConfirmIncomingConnectionAsync` 自动同意常驻联系人，文件确认不变；拒绝连接抛 `ConnectionRejectedException`。
+- **v6**：`V4Wire.ResumableVersion = 6`，`FeigeService.Capabilities = "3,4,5,6"`，`PeerBrowser` 优先选最新版本；`Storage/ResumableTransfer.cs` 与 Mac 线格式一致（含解码 Mac JSON 的测试）；`V4Connection.SendFolderAsync`；发送页新增“文件夹”按钮，拖放支持文件夹。
+- **离线待发**：`ConversationMessage.OutboxSince`（为空不写出）；`ConversationHistory` 新增 `Enqueue`（200 条上限）、`NextOutbox`、`CancelOutbox`、`ExpireOutbox`，`Load`/`FailActive` 把中断的待发消息放回队列。`AppSession` 拆出 `DeliverTextAsync`/`DeliverFilesAsync`，`FlushOutboxAsync` 在连接建立和每次发送后逐条投递；启动时和每小时检查过期；只为常驻联系人自动拨号。发送页 `CanCompose` 让未连接的会话也能输入和添加附件，消息可“取消发送”。
+- **编译修复**：在 macOS 上关闭 XAML 编译、单独编译全部 App C# 代码，发现并修复两处编译错误：`OnGroupEventReceived` 中局部变量 `sender` 与参数重名；探测设置的 `Split([...])` 调用有歧义，改为 `new[] { '\r', '\n' }`。剩余错误都是 XAML 生成的控件名。
+- **验证**：Core 全量 614/614 通过（macOS 上 .NET 11，`DOTNET_ROLL_FORWARD=Major`），含新增 `OutboxTests`、`ResumableTransferTests`、v6 握手向量。
+- **未完成**：Windows 虚拟机报 “Unable to open new session”，WinUI 工程（含 XAML）未完整编译，`Feige.App.Tests` 未运行；界面与 Mac↔Windows 真实局域网互通未验收；未打包。
+
+## 2026-11-02 新手引导、群成员面板与预置头像
+
+- **头像**：`Feige.Core/Profiles/AvatarIds.cs` 定义 ID 与指纹规范化，`Services/AvatarCatalog.cs` 从 `Project/Ui/Avatars` 链接的 `Assets/Avatars` 加载；引导页和设置页可选择或跳过；`MdnsAdvertiser` 在 TXT 中发布可选 `avatar=`，对端头像仅在完整指纹与已认证连接匹配后保存。
+- **群成员面板与文案**：群聊页面内显示成员数、头像、角色和在线状态并可搜索；按钮与确认框改为“申请退出群聊”“移出群聊”“结束群聊”“退出并转让群主”，本机行显示“本机 · 群主/成员”。
+- **空状态**：无设备时显示“尚未找到设备”，“重新搜索”和“连接排查”（打开网络排查对话框）。
+- **验证**：Parallels Windows 11 ARM64 / .NET 10.0.402 上 WinUI 构建（含 XAML）通过，`Feige.App.Tests` 8/8，Core 590/590。界面未人工验收。
+
 ## 2026-11-02 Windows 更新旧配置兼容与签名清单验证
 
 - **兼容修复**：应用启动改用共享 `UpdateSources.Parse`，同时接受新版有序 `sources` 与旧版顶层 `baseUri` / `trustedHosts` 配置；旧格式归一为单来源。UpdateTool 和 UpdateProbe 也统一使用该解析器。无效新版多来源 JSON 仍按严格规则拒绝，不会回退成旧格式。

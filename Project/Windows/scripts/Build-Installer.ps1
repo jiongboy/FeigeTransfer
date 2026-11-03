@@ -133,7 +133,8 @@ try {
     }
     foreach ($required in @('Feige.App.exe', 'coreclr.dll', 'Microsoft.UI.Xaml.dll', 'Feige.App.pri',
         'App.xbf', 'MainWindow.xbf', 'Pages\SendPage.xbf', 'Pages\ReceivePage.xbf', 'Pages\SettingsPage.xbf',
-        'Pages\SetupPage.xbf', 'Controls\AttachmentPreviewDialog.xbf', 'Assets\AppIcon.ico')) {
+        'Pages\SetupPage.xbf', 'Controls\AttachmentPreviewDialog.xbf', 'Assets\AppIcon.ico',
+        'Assets\Avatars\bird.png', 'Assets\Avatars\leaf.png')) {
         if (-not (Test-Path (Join-Path $payload $required))) { throw "Incomplete self-contained output: missing $required" }
     }
     $runtime = Get-Content (Join-Path $payload 'Feige.App.runtimeconfig.json') -Raw | ConvertFrom-Json

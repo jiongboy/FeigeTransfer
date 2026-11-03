@@ -172,7 +172,7 @@ public final class FeigeHandshake: @unchecked Sendable {
     /// v2 negotiates encryption before consent. Only ConnectionService may expose
     /// the resulting channel, and it does so after the receiver's explicit decision.
     func deriveConnectionKeys(_ pending: PendingPeerApproval) throws -> HandshakeSession {
-        guard offer.version == 2 || offer.version == 3 || offer.version == 4 || offer.version == 5 else { throw HandshakeError.invalidOffer }
+        guard (2...6).contains(offer.version) else { throw HandshakeError.invalidOffer }
         return try deriveVerifiedSession(peer: pending.peer, transcript: pending.transcript,
                                          localSignature: pending.localSignature, peerSignature: pending.peerSignature,
                                          expectedFingerprint: pending.peerFingerprint)

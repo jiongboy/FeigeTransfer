@@ -48,12 +48,14 @@
             <NavigationView.MenuItems>
                 <NavigationViewItem x:Name="MessagesNavItem" Content="消息" Tag="send" IsSelected="True" Margin="0,8,0,4" Height="44" ToolTipService.ToolTip="消息与设备会话">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE8F2;" /></NavigationViewItem.Icon>
+                    <NavigationViewItem.InfoBadge><InfoBadge x:Name="MessagesBadge" Visibility="Collapsed" AutomationProperties.Name="未读私聊消息" /></NavigationViewItem.InfoBadge>
                 </NavigationViewItem>
                 <NavigationViewItem x:Name="RecordsNavItem" Content="传输记录" Tag="receive" Margin="0,0,0,4" Height="44" ToolTipService.ToolTip="传输记录">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE8B7;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem x:Name="GroupsNavItem" Content="群组" Tag="groups" Margin="0,0,0,4" Height="44" ToolTipService.ToolTip="群组会话">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE902;" /></NavigationViewItem.Icon>
+                    <NavigationViewItem.InfoBadge><InfoBadge x:Name="GroupsBadge" Visibility="Collapsed" AutomationProperties.Name="未读群聊消息" /></NavigationViewItem.InfoBadge>
                 </NavigationViewItem>
             </NavigationView.MenuItems>
             <Frame x:Name="NavFrame" Margin="0,0,10,10" Background="{ThemeResource FeigePanelBrush}" CornerRadius="12" />

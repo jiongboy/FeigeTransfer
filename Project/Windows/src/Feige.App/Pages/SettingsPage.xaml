@@ -22,6 +22,24 @@
                 </StackPanel>
             </Border>
             <Border Style="{StaticResource FeigeSectionCardStyle}">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="本机头像" FontSize="15" FontWeight="SemiBold" />
+                    <TextBlock Text="头像只用于显示。你选择的预置头像 ID 会随局域网发现信息发送，不参与身份验证或权限判断。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <GridView x:Name="AvatarPicker" SelectionMode="Single" SelectionChanged="OnAvatarSelectionChanged" AutomationProperties.Name="选择本机头像">
+                        <GridView.ItemsPanel><ItemsPanelTemplate><ItemsWrapGrid Orientation="Horizontal" ItemWidth="76" ItemHeight="72" /></ItemsPanelTemplate></GridView.ItemsPanel>
+                        <GridView.ItemTemplate>
+                            <DataTemplate x:DataType="svc:AvatarChoice">
+                                <StackPanel Width="72" Height="68" Spacing="3" HorizontalAlignment="Center">
+                                    <Image Source="{x:Bind Image}" Width="40" Height="40" HorizontalAlignment="Center" />
+                                    <TextBlock Text="{x:Bind DisplayName}" FontSize="11" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </GridView.ItemTemplate>
+                    </GridView>
+                    <InfoBar x:Name="AvatarBar" IsClosable="True" IsOpen="False" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource FeigeSectionCardStyle}">
                 <StackPanel Spacing="12">
                     <TextBlock Text="本机连接信息" FontSize="15" FontWeight="SemiBold" />
                     <TextBlock x:Name="ConnectionStatusText" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" />
@@ -104,6 +122,25 @@
                     </ListView>
                     <Button x:Name="RestoreAllConversationsButton" Content="全部恢复" Click="OnRestoreAllConversationsClick" />
                     <InfoBar x:Name="HiddenConversationsBar" IsOpen="False" Severity="Error" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource FeigeSectionCardStyle}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="其他网段" FontSize="15" FontWeight="SemiBold" />
+                    <TextBlock Text="对方在其他网段时自动发现不可用，可在此保存对方地址或网段，例如 192.168.60.12 或 192.168.60.0/24。一行一项，最多 16 项。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBox x:Name="ProbeTargetsBox" AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="72" FontFamily="Consolas" AutomationProperties.Name="其他网段，一行一项" />
+                    <ToggleSwitch x:Name="AllowsProbesSwitch" Header="允许其他网段发现本机" OnContent="开启" OffContent="关闭" />
+                    <Button x:Name="SaveProbeTargetsButton" Content="保存网段" Click="OnSaveProbeTargetsClick" />
+                    <TextBlock x:Name="ProbeHintText" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <InfoBar x:Name="ProbeTargetsBar" IsOpen="False" Severity="Error" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource FeigeSectionCardStyle}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="常驻联系人" FontSize="15" FontWeight="SemiBold" />
+                    <TextBlock Text="常驻联系人上线后自动连接，对方发起的连接自动同意；接收文件仍需确认。只认设备身份，不看名称或地址。" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="TrustedPeersEmpty" Text="没有常驻联系人。可以在连接确认框或会话右键菜单中设置。" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextWrapping="Wrap" />
+                    <StackPanel x:Name="TrustedPeersPanel" Spacing="8" AutomationProperties.Name="常驻联系人" />
                 </StackPanel>
             </Border>
             <Expander HorizontalAlignment="Stretch" Header="设备身份与连接安全">

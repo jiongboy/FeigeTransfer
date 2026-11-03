@@ -17,9 +17,15 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var status: Status
     var progress: Double = 0
     var failureReason: String? = nil
+    /// Set when a direct message was written while the peer was not connected. Such a message
+    /// goes back to `queued` after an interruption and is delivered once the peer connects.
+    var outboxSince: Date? = nil
 
     var rowID: String { "\(peerID):\(direction.rawValue):\(kind.rawValue):\(id)" }
     var isPending: Bool { status == .queued || status == .awaitingApproval || status == .sending }
+    var isOutbox: Bool { outboxSince != nil && direction == .sent && (status == .queued || status == .sending) }
+    /// Pending messages return to the outbox; other interrupted messages fail.
+    var interruptedStatus: Status { outboxSince != nil && direction == .sent ? .queued : .failed }
     var preview: String {
         switch kind {
         case .text: text ?? "文字消息"

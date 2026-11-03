@@ -1,5 +1,6 @@
 using System.Net;
 using Feige.Core.Net;
+using Feige.Core.Profiles;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -28,6 +29,9 @@ public sealed record DiscoveredPeer(DnsName Instance, string DeviceName, string?
 
     /// <summary>Versions advertised by the peer; used only to choose a handshake attempt.</summary>
     public IReadOnlySet<int> SupportedVersions { get; init; } = new HashSet<int>();
+
+    /// <summary>Untrusted cosmetic metadata advertised over mDNS; never an identity or authorization input.</summary>
+    public string? AvatarId { get; init; }
 
     /// <summary>First few fingerprint groups, for a subtitle; the full value belongs in the confirmation dialog.</summary>
     public string ShortFingerprint
@@ -106,30 +110,35 @@ public static class FeigeService
         return Type.WithPrefix(label);
     }
 
-    /// <summary>Builds the TXT entries for a device.</summary>
-    public static IReadOnlyList<string> BuildTxt(string deviceName, string fingerprint, int version = 1)
+    /// <summary>Builds the TXT entries for a device, optionally including cosmetic avatar metadata.</summary>
+    /// <summary>Protocol versions this build accepts.</summary>
+    public const string Capabilities = "3,4,5,6";
+
+    public static IReadOnlyList<string> BuildTxt(string deviceName, string fingerprint, int version = 1, string? avatarId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceName);
         ArgumentNullException.ThrowIfNull(fingerprint);
         if (version is not (1 or 3 or 4)) throw new ArgumentOutOfRangeException(nameof(version));
 
-        if (version == 3) return ["version=3", $"name={deviceName.Trim()}"];
-        if (version == 4)
+        List<string> entries = version switch
         {
-            return
+            3 => ["version=3", $"name={deviceName.Trim()}"],
+            4 =>
             [
                 $"{TxtVersion}={V4ProtocolVersion}",
                 $"{TxtName}={deviceName.Trim()}",
                 $"{TxtFingerprint}={fingerprint.Replace(" ", string.Empty, StringComparison.Ordinal)}",
-                "caps=3,4,5",
-            ];
-        }
-        return
-        [
-            $"{TxtVersion}={ProtocolVersion}",
-            $"{TxtName}={deviceName.Trim()}",
-            $"{TxtFingerprint}={fingerprint.Replace(" ", string.Empty, StringComparison.Ordinal)}",
-        ];
+                $"caps={Capabilities}",
+            ],
+            _ =>
+            [
+                $"{TxtVersion}={ProtocolVersion}",
+                $"{TxtName}={deviceName.Trim()}",
+                $"{TxtFingerprint}={fingerprint.Replace(" ", string.Empty, StringComparison.Ordinal)}",
+            ],
+        };
+        if (AvatarIds.IsKnown(avatarId)) entries.Add($"avatar={avatarId}");
+        return entries;
     }
 
     /// <summary>Parses the TXT entries into a display name and fingerprint, tolerating missing keys.</summary>
@@ -169,6 +178,21 @@ public static class FeigeService
         // better message than "device silently disappeared".
         _ = version;
         return (string.IsNullOrEmpty(name) ? string.Empty : name, string.IsNullOrEmpty(fingerprint) ? null : fingerprint);
+    }
+
+    /// <summary>Reads a known avatar ID from TXT; missing or unknown values return null.</summary>
+    public static string? ParseAvatarId(IEnumerable<string> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        string? avatarId = null;
+        foreach (string entry in entries)
+        {
+            int separator = entry.IndexOf('=');
+            if (separator <= 0 || !string.Equals(entry[..separator], "avatar", StringComparison.OrdinalIgnoreCase)) continue;
+            string value = entry[(separator + 1)..];
+            avatarId = AvatarIds.IsKnown(value) ? value : null;
+        }
+        return avatarId;
     }
 
     /// <summary>Reads the advertised protocol version from either legacy or current TXT key names.</summary>

@@ -1,3 +1,4 @@
+using Feige.Core.Conversations;
 using System.Net;
 using System.Net.Sockets;
 using Feige.Core.Crypto;
@@ -164,7 +165,7 @@ public sealed class NetworkResilienceTests
         try
         {
             var accepting = listener.AcceptAsync(new LocalDevice(b, "B"), (_, _) => { approvals++; return Task.FromResult(false); }, deadline.Token);
-            await Assert.ThrowsAsync<InvalidOperationException>(() => V3PeerConnector.ConnectAsync(new[] { new IPEndPoint(IPAddress.Loopback, listener.Port), (IPEndPoint)alternate.LocalEndpoint }, new LocalDevice(a, "A"), deadline.Token));
+            await Assert.ThrowsAsync<ConnectionRejectedException>(() => V3PeerConnector.ConnectAsync(new[] { new IPEndPoint(IPAddress.Loopback, listener.Port), (IPEndPoint)alternate.LocalEndpoint }, new LocalDevice(a, "A"), deadline.Token));
             await Assert.ThrowsAsync<InvalidOperationException>(() => accepting); Assert.Equal(1, approvals); Assert.False(alternate.Pending());
         }
         finally { alternate.Stop(); }

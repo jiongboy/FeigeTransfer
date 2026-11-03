@@ -63,6 +63,8 @@ public sealed partial class MainWindow : Window
             AppWindow.Hide();
         };
 
+        Activated += (_, args) => AppSession.Current.SetWindowActive(args.WindowActivationState != WindowActivationState.Deactivated);
+        AppSession.Current.UnreadChanged += (_, _) => RefreshUnreadBadges();
         AppSession.Current.StateChanged += (_, _) => RefreshGuidance();
         AppUpdates.Current.Changed += (_, _) => RefreshUpdateUi();
         RefreshUpdateUi();
@@ -246,6 +248,13 @@ public sealed partial class MainWindow : Window
         if (existing is { Length: 1 } && existing[0].X == rect.X && existing[0].Y == rect.Y &&
             existing[0].Width == rect.Width && existing[0].Height == rect.Height) return;
         _resizeInput.SetRegionRects(kind, [rect]);
+    }
+
+    private void RefreshUnreadBadges()
+    {
+        int direct = AppSession.Current.DirectUnreadTotal, groups = AppSession.Current.GroupUnreadTotal;
+        MessagesBadge.Value = direct; MessagesBadge.Visibility = direct > 0 ? Visibility.Visible : Visibility.Collapsed;
+        GroupsBadge.Value = groups; GroupsBadge.Visibility = groups > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     public async Task ExitAsync()

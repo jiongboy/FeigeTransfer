@@ -70,9 +70,7 @@
                         <DataTemplate x:DataType="svc:ConversationItem">
                             <Grid ColumnSpacing="11" ToolTipService.ToolTip="{x:Bind State, Mode=OneWay}">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="42" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                <Border Width="42" Height="42" VerticalAlignment="Top" CornerRadius="13" Background="{ThemeResource FeigeAvatarBrush}">
-                                    <TextBlock Text="{x:Bind AvatarText, Mode=OneWay}" FontSize="19" FontWeight="SemiBold" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                </Border>
+                                <Image Source="{x:Bind AvatarImage, Mode=OneWay}" Width="42" Height="42" VerticalAlignment="Top" AutomationProperties.Name="会话头像" />
                                 <Grid Grid.Column="1" RowSpacing="4">
                                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                     <Grid ColumnSpacing="6">
@@ -80,7 +78,11 @@
                                         <TextBlock Text="{x:Bind Name, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Grid.Column="1" Text="{x:Bind LastActivityText, Mode=OneWay}" FontSize="10" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                                     </Grid>
-                                    <TextBlock Grid.Row="1" Text="{x:Bind Summary, Mode=OneWay}" FontSize="12" MaxLines="1" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <Grid Grid.Row="1" ColumnSpacing="6">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind Summary, Mode=OneWay}" FontSize="12" MaxLines="1" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <InfoBadge Grid.Column="1" Value="{x:Bind UnreadCount, Mode=OneWay}" Visibility="{x:Bind UnreadVisibility, Mode=OneWay}" AutomationProperties.Name="未读消息数" />
+                                    </Grid>
                                 </Grid>
                             </Grid>
                         </DataTemplate>
@@ -110,9 +112,7 @@
                         <DataTemplate x:DataType="disc:DiscoveredPeer">
                             <Grid ColumnSpacing="9">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="32" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <Border Width="32" Height="32" CornerRadius="10" Background="{ThemeResource FeigeAvatarBrush}">
-                                    <FontIcon Glyph="&#xE7F4;" FontSize="16" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" />
-                                </Border>
+                                <Image Source="{x:Bind AvatarId, Converter={StaticResource AvatarImageConverter}}" Width="32" Height="32" AutomationProperties.Name="附近设备头像" />
                                 <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
                                     <TextBlock Text="{x:Bind DisplayName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                     <TextBlock Text="{x:Bind EndpointText}" FontSize="10" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
@@ -125,8 +125,15 @@
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
-                <TextBlock x:Name="PeersEmpty" Text="请在另一台电脑打开飞鸽快传，并连接到同一局域网。可刷新设备、用 + 手动连接，或查看连接帮助。" TextWrapping="Wrap" Margin="8,8" FontSize="11"
-                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Top" IsHitTestVisible="False" />
+                <StackPanel x:Name="PeersEmptyPanel" Spacing="6" Margin="8,0" VerticalAlignment="Top">
+                    <TextBlock x:Name="PeersEmptyTitle" Text="尚未找到设备" FontSize="13" FontWeight="SemiBold" AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock Text="请确认另一台设备已打开飞鸽快传，并处于可互通的网络。也可用上方 + 手动连接。" FontSize="12" TextWrapping="Wrap"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                        <Button x:Name="EmptyRefreshButton" Content="重新搜索" Click="OnRefreshClick" />
+                        <Button Content="连接排查" Click="OnNetworkTroubleshootingClick" />
+                    </StackPanel>
+                </StackPanel>
             </Grid>
 
         </Grid>
@@ -139,9 +146,7 @@
                         AutomationProperties.Name="返回会话列表" ToolTipService.ToolTip="返回会话列表">
                         <FontIcon Glyph="&#xE72B;" FontSize="15" />
                     </Button>
-                    <Border Grid.Column="1" Width="40" Height="40" CornerRadius="13" Background="{ThemeResource FeigeAvatarBrush}">
-                        <TextBlock x:Name="PeerAvatar" Text="鸽" FontSize="20" FontWeight="SemiBold" Foreground="{ThemeResource FeigeAvatarForegroundBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Border>
+                    <Image x:Name="PeerAvatarImage" Grid.Column="1" Width="40" Height="40" AutomationProperties.Name="当前会话头像" />
                     <StackPanel Grid.Column="2" Spacing="4" VerticalAlignment="Center">
                         <TextBlock x:Name="PeerTitle" Text="消息" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                         <TextBlock x:Name="ConnectionState" Text="选择设备，开始安全传输" FontSize="11" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -164,7 +169,10 @@
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="svc:MessageItem">
                             <StackPanel HorizontalAlignment="{x:Bind Alignment}" MaxWidth="560" Spacing="6">
-                                <TextBlock Text="{x:Bind Caption, Mode=OneWay}" FontSize="10" HorizontalAlignment="{x:Bind Alignment}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                <StackPanel Orientation="Horizontal" Spacing="5" HorizontalAlignment="{x:Bind Alignment}">
+                                    <Image Source="{x:Bind AvatarImage, Mode=OneWay}" Width="18" Height="18" AutomationProperties.Name="消息发送者头像" />
+                                    <TextBlock Text="{x:Bind Caption, Mode=OneWay}" FontSize="10" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                </StackPanel>
                                 <Border Style="{x:Bind BubbleStyle}">
                                     <StackPanel Spacing="9">
                                         <TextBlock Visibility="{x:Bind TextVisibility, Mode=OneWay}" Text="{x:Bind Body, Mode=OneWay}" TextWrapping="Wrap" IsTextSelectionEnabled="True" FontSize="14" LineHeight="22" />
@@ -205,6 +213,7 @@
                                             </Border>
                                         </StackPanel>
                                         <Button Content="重试" Visibility="{x:Bind RetryVisibility, Mode=OneWay}" Click="OnRetryClick" FontSize="12" Padding="9,5" HorizontalAlignment="Left" />
+                                        <Button Content="取消发送" Visibility="{x:Bind CancelVisibility, Mode=OneWay}" Click="OnCancelOutboxClick" FontSize="12" Padding="9,5" HorizontalAlignment="Left" />
                                     </StackPanel>
                                 </Border>
                                 <TextBlock Visibility="{x:Bind TextVisibility, Mode=OneWay}" Text="{x:Bind Status, Mode=OneWay}" FontSize="10" HorizontalAlignment="{x:Bind Alignment}" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
@@ -245,6 +254,9 @@
                                 </Button>
                                 <Button x:Name="FilesButton" AutomationProperties.Name="发送文件" Click="OnFilesClick" IsEnabled="False" Background="Transparent" BorderThickness="0" Padding="8,6" ToolTipService.ToolTip="发送文件">
                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="6"><FontIcon Glyph="&#xE8B7;" FontSize="15" VerticalAlignment="Center" /><TextBlock Text="文件" FontSize="12" VerticalAlignment="Center" /></StackPanel>
+                                </Button>
+                                <Button x:Name="FolderButton" AutomationProperties.Name="发送文件夹" Click="OnFolderClick" IsEnabled="False" Background="Transparent" BorderThickness="0" Padding="8,6" ToolTipService.ToolTip="发送文件夹（对方需支持断点续传）">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="6"><FontIcon Glyph="&#xE8D5;" FontSize="15" VerticalAlignment="Center" /><TextBlock Text="文件夹" FontSize="12" VerticalAlignment="Center" /></StackPanel>
                                 </Button>
                             </StackPanel>
                             <Button x:Name="SendButton" AutomationProperties.Name="发送消息" Grid.Column="1" Click="OnSendTextClick" Style="{StaticResource AccentButtonStyle}" IsEnabled="False" Padding="14,6" CornerRadius="7" ToolTipService.ToolTip="发送消息（Enter）">

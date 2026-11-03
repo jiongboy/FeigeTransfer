@@ -31,14 +31,25 @@ public sealed record V3Text([property: JsonRequired] Guid Id, [property: JsonReq
     }
 }
 
+/// <remarks><c>ResumeID</c> and <c>Folder</c> are v6 fields (Protocol v6 §2); they are omitted on older channels.</remarks>
 public sealed record V3File([property: JsonRequired] Guid TransferID, [property: JsonRequired] string FileName,
-    [property: JsonRequired] long Size, string Kind = "file")
+    [property: JsonRequired] long Size, string Kind = "file",
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? ResumeID = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Storage.V6FolderInfo? Folder = null)
 {
     public void Validate()
     {
         if (Size < 0 || Kind is not ("file" or "image")) throw new InvalidDataException("附件信息无效。");
         Protocol.TransferManifest.ValidateFileName(FileName);
+        if (Folder is null) return;
+        Folder.Validate();
+        if (ResumeID is null || Folder.Components[^1] != FileName || (ulong)Size > Folder.TotalBytes)
+            throw new InvalidDataException("文件夹附件信息无效。");
     }
+
+    /// <summary>A folder transfer is shown as one item named after its root folder.</summary>
+    [JsonIgnore] public string DisplayName => Folder?.RootName ?? FileName;
+    [JsonIgnore] public long DisplaySize => Folder is null ? Size : (long)Folder.TotalBytes;
 }
 
 public static class V3Wire

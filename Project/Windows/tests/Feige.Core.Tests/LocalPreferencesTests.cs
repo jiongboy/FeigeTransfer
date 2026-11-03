@@ -1,3 +1,4 @@
+using Feige.Core.Profiles;
 using Feige.Core.Storage;
 
 namespace Feige.Core.Tests;
@@ -20,6 +21,32 @@ public sealed class LocalPreferencesTests : IDisposable
         new LocalPreferencesFile(_root).Save(settings);
         Assert.Equal(settings, new LocalPreferencesFile(_root).Load());
         Assert.Empty(Directory.GetFiles(_root, "*.tmp"));
+    }
+
+    [Fact]
+    public void OlderSettingsWithoutAvatarFieldsRemainReadableAndUseDefaultAvatar()
+    {
+        Directory.CreateDirectory(_root);
+        var file = new LocalPreferencesFile(_root);
+        File.WriteAllText(file.FilePath, $"{{\"deviceName\":\"Old PC\",\"receiveFolder\":\"{_root.Replace("\\", "\\\\", StringComparison.Ordinal)}\"}}");
+
+        LocalPreferences loaded = Assert.IsType<LocalPreferences>(file.Load());
+        Assert.Null(loaded.AvatarId);
+        Assert.Null(loaded.PeerAvatarIds);
+        Assert.Equal(AvatarIds.Default, AvatarIds.Normalize(loaded.AvatarId));
+    }
+
+    [Fact]
+    public void AvatarSettingsRoundTripWithFullFingerprintKey()
+    {
+        string fingerprint = new('A', 64);
+        var preferences = new LocalPreferences("Avatar test", _root, AvatarId: "fox",
+            PeerAvatarIds: new Dictionary<string, string> { [fingerprint] = "panda" });
+        var file = new LocalPreferencesFile(_root);
+        file.Save(preferences);
+        LocalPreferences loaded = Assert.IsType<LocalPreferences>(file.Load());
+        Assert.Equal("fox", loaded.AvatarId);
+        Assert.Equal(new Dictionary<string, string> { [fingerprint] = "panda" }, loaded.PeerAvatarIds);
     }
 
     [Fact]

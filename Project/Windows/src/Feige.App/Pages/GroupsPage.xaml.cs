@@ -1,8 +1,10 @@
 using System.Collections.Specialized;
 using Feige.App.Services;
 using Feige.Core.Conversations;
+using Feige.Core.Storage;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Navigation;
 using Windows.Storage.Pickers;
 
@@ -16,6 +18,10 @@ public sealed partial class GroupsPage : Page
     private V4GroupAppService? _observedService;
     private bool _refreshing;
     private bool _suppressSelectionChanged;
+    private bool _isChoosingMembers;
+    private bool _membershipChangeInFlight;
+    private bool _showGroupListInNarrow;
+    private bool _showMembersInNarrow;
     private readonly HashSet<Guid> _leaveRequestsInFlight = [];
 
     public GroupsPage()
@@ -24,7 +30,68 @@ public sealed partial class GroupsPage : Page
         NavigationCacheMode = NavigationCacheMode.Required;
         GroupList.ItemsSource = AppSession.Current.Groups?.Groups;
         GroupList.ItemTemplate = GroupTemplate();
+        AvailableMemberList.ItemTemplate = PeerTemplate();
         MessageList.ItemsSource = null;
+        Loaded += (_, _) => RefreshResponsiveLayout(Root.ActualWidth);
+    }
+
+    private void OnRootSizeChanged(object sender, SizeChangedEventArgs e) => RefreshResponsiveLayout(e.NewSize.Width);
+
+    private void RefreshResponsiveLayout(double width)
+    {
+        bool narrow = width < 980;
+        if (!narrow) { _showGroupListInNarrow = false; _showMembersInNarrow = false; }
+        if (_selected is null) _showMembersInNarrow = false;
+        bool showGroupList = narrow && _showGroupListInNarrow;
+        bool showMemberInspector = narrow && _showMembersInNarrow && _selected is not null;
+        bool hasDetail = _selected is not null || Service?.PendingApprovals.Count > 0;
+
+        ListColumn.Width = narrow
+            ? showGroupList ? new GridLength(1, GridUnitType.Star) : new GridLength(0)
+            : new GridLength(280);
+        DetailColumn.Width = narrow
+            ? showGroupList ? new GridLength(0) : new GridLength(1, GridUnitType.Star)
+            : new GridLength(1, GridUnitType.Star);
+        GroupList.Visibility = !narrow || showGroupList ? Visibility.Visible : Visibility.Collapsed;
+        DetailPane.Visibility = hasDetail && !showGroupList ? Visibility.Visible : Visibility.Collapsed;
+        EmptyGroups.Visibility = !hasDetail && !showGroupList ? Visibility.Visible : Visibility.Collapsed;
+
+        ChatColumn.Width = narrow
+            ? showMemberInspector ? new GridLength(0) : new GridLength(1, GridUnitType.Star)
+            : new GridLength(1, GridUnitType.Star);
+        MemberInspectorColumn.Width = narrow
+            ? showMemberInspector ? new GridLength(1, GridUnitType.Star) : new GridLength(0)
+            : _selected is not null ? new GridLength(310) : new GridLength(0);
+        ChatPane.Visibility = showMemberInspector ? Visibility.Collapsed : Visibility.Visible;
+        MemberInspector.Visibility = _selected is not null && (!narrow || showMemberInspector)
+            ? Visibility.Visible : Visibility.Collapsed;
+        ComposerGrid.Visibility = showMemberInspector ? Visibility.Collapsed : Visibility.Visible;
+        ShowGroupsButton.Visibility = narrow && !showGroupList && _selected is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        MembersButton.Visibility = narrow && !showMemberInspector && _selected is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        CloseMemberInspectorButton.Visibility = showMemberInspector ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void OnShowGroupsClick(object sender, RoutedEventArgs e)
+    {
+        _showMembersInNarrow = false;
+        _showGroupListInNarrow = true;
+        RefreshResponsiveLayout(Root.ActualWidth);
+    }
+
+    private void OnMembersClick(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null) return;
+        _showGroupListInNarrow = false;
+        _showMembersInNarrow = true;
+        RefreshResponsiveLayout(Root.ActualWidth);
+    }
+
+    private void OnCloseMemberInspectorClick(object sender, RoutedEventArgs e)
+    {
+        _showMembersInNarrow = false;
+        RefreshResponsiveLayout(Root.ActualWidth);
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -45,6 +112,7 @@ public sealed partial class GroupsPage : Page
         app.Peers.CollectionChanged -= OnPeersChanged;
         app.Conversations.CollectionChanged -= OnPeersChanged;
         ObserveService(null);
+        app.SetVisibleConversation(null);
         base.OnNavigatedFrom(e);
     }
 
@@ -149,19 +217,25 @@ public sealed partial class GroupsPage : Page
     {
         bool hasSelection = _selected is not null;
         bool hasApprovals = Service?.PendingApprovals.Count > 0;
-        bool showDetailPane = hasSelection || hasApprovals;
-        EmptyGroups.Visibility = showDetailPane ? Visibility.Collapsed : Visibility.Visible;
-        DetailPane.Visibility = showDetailPane ? Visibility.Visible : Visibility.Collapsed;
-        if (hasSelection) return;
-
-        GroupTitle.Text = hasApprovals ? "待处理请求" : "选择群组";
-        MemberPanel.Children.Clear();
-        MessageList.ItemsSource = null;
-        EditMembersButton.IsEnabled = false;
-        LeaveButton.IsEnabled = false;
-        PickFileButton.IsEnabled = false;
-        Composer.IsEnabled = false;
-        SendButton.IsEnabled = false;
+        if (!hasSelection)
+        {
+            _showMembersInNarrow = false;
+            GroupTitle.Text = hasApprovals ? "待处理请求" : "选择群组";
+            MemberGroupName.Text = "";
+            MemberCount.Text = "";
+            MemberPanel.Children.Clear();
+            MessageList.ItemsSource = null;
+            AddMemberButton.IsEnabled = false;
+            LeaveButton.IsEnabled = false;
+            PickFileButton.IsEnabled = false;
+            AvailableMemberList.Visibility = Visibility.Collapsed;
+            AddMemberExplanation.Visibility = Visibility.Collapsed;
+            AvailableMembersEmpty.Visibility = Visibility.Collapsed;
+            AddMemberActions.Visibility = Visibility.Collapsed;
+            Composer.IsEnabled = false;
+            SendButton.IsEnabled = false;
+        }
+        RefreshResponsiveLayout(Root.ActualWidth);
     }
 
     private static bool IsEligibleConversation(ConversationItem conversation)
@@ -172,6 +246,7 @@ public sealed partial class GroupsPage : Page
     {
         if (_refreshing || _suppressSelectionChanged) return;
         GroupConversation? selected = GroupList.SelectedItem as GroupConversation;
+        if (selected is not null) AppSession.Current.SetVisibleConversation(UnreadCounter.GroupKey(selected.Id));
         if (selected is null && _selectedGroupId is { } retainedId &&
             Service?.Groups.Any(group => group.Id == retainedId) == true)
         {
@@ -196,49 +271,142 @@ public sealed partial class GroupsPage : Page
                 _suppressSelectionChanged = false;
             return;
         }
+        if (_selected?.Id != selected?.Id)
+        {
+            _isChoosingMembers = false;
+            _showGroupListInNarrow = false;
+            _showMembersInNarrow = false;
+            MemberSearch.Text = "";
+        }
         _selected = selected;
         _selectedGroupId = _selected?.Id;
         RefreshDetailPaneVisibility();
         if (_selected is not null) RefreshSelection();
     }
 
+    private void OnGroupItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is not GroupConversation group) return;
+        _isChoosingMembers = false;
+        _showGroupListInNarrow = false;
+        _showMembersInNarrow = false;
+        _selected = group;
+        _selectedGroupId = group.Id;
+        _suppressSelectionChanged = true;
+        GroupList.SelectedItem = group;
+        _suppressSelectionChanged = false;
+        RefreshDetailPaneVisibility();
+        RefreshSelection();
+    }
+
     private void RefreshSelection()
     {
         if (_selected is null || Service is null) return;
         var group = _selected;
-        GroupTitle.Text = $"{group.Name} · {group.Members.Count} 人";
-        MemberPanel.Children.Clear();
-        MemberPanel.Children.Add(new TextBlock { Text = "成员", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        foreach (var member in group.Members)
-        {
-            bool online = member.Fingerprint == AppSession.Current.Identity?.Fingerprint || Service.IsPeerConnected(member.Fingerprint);
-            MemberPanel.Children.Add(new TextBlock
-            {
-                Text = $"{(member.Fingerprint == group.OwnerFingerprint ? "群主 · " : "")}{member.DisplayName ?? member.Fingerprint} · {(online ? "已连接" : "未连接")}",
-                TextWrapping = TextWrapping.Wrap
-            });
-        }
-        bool localMember = group.Members.Any(member => member.Fingerprint == AppSession.Current.Identity?.Fingerprint);
-        bool hasRemoteMember = group.Members.Any(member => member.Fingerprint != AppSession.Current.Identity?.Fingerprint);
-        bool owner = group.OwnerFingerprint == AppSession.Current.Identity?.Fingerprint;
-        bool hasPendingTransaction = Service.Operations.Any(op => op.GroupID == group.Id && op.Pending) ||
+        var app = AppSession.Current;
+        string? localFingerprint = app.Identity?.Fingerprint;
+        bool localMember = group.Members.Any(member => member.Fingerprint == localFingerprint);
+        bool hasRemoteMember = group.Members.Any(member => member.Fingerprint != localFingerprint);
+        bool owner = group.OwnerFingerprint == localFingerprint;
+        bool allMembersOnline = group.Members.All(member => member.Fingerprint == localFingerprint || Service.IsPeerConnected(member.Fingerprint));
+        bool hasPendingTransaction = _membershipChangeInFlight || Service.Operations.Any(op => op.GroupID == group.Id && op.Pending) ||
             Service.Store.PendingMembershipPrepares.Any(prepare => prepare.GroupID == group.Id);
-        EditMembersButton.IsEnabled = owner && group.Members.Count > 1 && group.Members.All(m => m.Fingerprint == AppSession.Current.Identity?.Fingerprint || Service.IsPeerConnected(m.Fingerprint)) && !hasPendingTransaction;
-        LeaveButton.Content = owner ? (group.Members.Count == 1 ? "解散群组" : "离开并移交群主") : "申请退出群组";
+
+        GroupTitle.Text = group.Name;
+        MemberGroupName.Text = group.Name;
+        MemberCount.Text = $"{group.Members.Count}/{GroupConversation.MaximumMembers} 位成员";
+        MemberPanel.Children.Clear();
+        var visibleMembers = group.Members.Where(member => string.IsNullOrWhiteSpace(MemberSearch.Text) ||
+            (member.DisplayName?.Contains(MemberSearch.Text, StringComparison.CurrentCultureIgnoreCase) ?? false) ||
+            member.Fingerprint.Contains(MemberSearch.Text, StringComparison.OrdinalIgnoreCase) ||
+            (member.Fingerprint == localFingerprint && "本机".Contains(MemberSearch.Text, StringComparison.CurrentCultureIgnoreCase))).ToArray();
+        foreach (var member in visibleMembers) MemberPanel.Children.Add(BuildMemberRow(group, member, owner, allMembersOnline, hasPendingTransaction));
+        if (visibleMembers.Length == 0)
+            MemberPanel.Children.Add(new TextBlock { Text = "没有匹配的成员。", FontSize = 12, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
+
+        AddMemberButton.IsEnabled = owner && group.Members.Count < GroupConversation.MaximumMembers && allMembersOnline && !hasPendingTransaction;
+        LeaveButton.Content = owner ? (group.Members.Count == 1 ? "结束群聊" : "退出并转让群主") : "申请退出群聊";
         LeaveButton.IsEnabled = localMember && !hasPendingTransaction &&
-            (owner || (Service.IsPeerConnected(group.OwnerFingerprint) && !_leaveRequestsInFlight.Contains(group.Id)));
-        PickFileButton.IsEnabled = localMember && group.Members.Any(member => member.Fingerprint != AppSession.Current.Identity?.Fingerprint && Service.IsPeerConnected(member.Fingerprint));
+            (owner ? allMembersOnline : (Service.IsPeerConnected(group.OwnerFingerprint) && !_leaveRequestsInFlight.Contains(group.Id)));
+        PickFileButton.IsEnabled = localMember && group.Members.Any(member => member.Fingerprint != localFingerprint && Service.IsPeerConnected(member.Fingerprint));
         Composer.IsEnabled = localMember && hasRemoteMember;
         SendButton.IsEnabled = localMember && hasRemoteMember;
+        MemberConstraint.Text = allMembersOnline
+            ? "成员名单变更需要所有成员在线并明确确认；群聊最多 20 人（含本机）。"
+            : "有成员离线。添加或移除成员、群主转让暂不可用；请等待自动重连后再操作。";
         MessageList.ItemsSource = Service.Messages.Where(m => m.GroupID == group.Id).OrderBy(m => m.Date).Select(BuildMessageRow).ToArray();
+        RefreshAvailableMembers(group, allMembersOnline, hasPendingTransaction);
+    }
+
+    private StackPanel BuildMemberRow(GroupConversation group, GroupMember member, bool owner, bool allMembersOnline, bool hasPendingTransaction)
+    {
+        var app = AppSession.Current;
+        bool isLocal = member.Fingerprint == app.Identity?.Fingerprint;
+        bool online = isLocal || Service?.IsPeerConnected(member.Fingerprint) == true;
+        string? avatarId = isLocal ? app.Settings.AvatarId : app.Settings.GetPeerAvatarId(member.Fingerprint);
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var avatar = new Image { Source = AvatarCatalog.GetImageSource(avatarId), Width = 36, Height = 36, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(avatar, 0);
+        row.Children.Add(avatar);
+        var labels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        labels.Children.Add(new TextBlock { Text = string.IsNullOrWhiteSpace(member.DisplayName) ? "未知设备" : member.DisplayName, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+        string role = member.Fingerprint == group.OwnerFingerprint ? "群主" : "成员";
+        labels.Children.Add(new TextBlock { Text = isLocal ? $"本机 · {role}" : $"{role} · {(online ? "在线" : "离线")}", FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
+        Grid.SetColumn(labels, 1);
+        row.Children.Add(labels);
+        if (owner && !isLocal && member.Fingerprint != group.OwnerFingerprint)
+        {
+            var remove = new Button { Content = "移出群聊", Padding = new Thickness(8, 4, 8, 4), IsEnabled = allMembersOnline && !hasPendingTransaction };
+            AutomationProperties.SetName(remove, $"移出成员 {member.DisplayName ?? "未知设备"}");
+            remove.Click += async (_, _) => await RemoveMemberAsync(group, member);
+            Grid.SetColumn(remove, 2);
+            row.Children.Add(remove);
+        }
+        return new StackPanel { Children = { row } };
+    }
+
+    private void RefreshAvailableMembers(GroupConversation group, bool allMembersOnline, bool hasPendingTransaction)
+    {
+        var candidates = AppSession.Current.Conversations.Where(IsEligibleConversation)
+            .Where(conversation => !group.Members.Any(member => member.Fingerprint == conversation.Fingerprint))
+            .Where(conversation => string.IsNullOrWhiteSpace(MemberSearch.Text) ||
+                conversation.Name.Contains(MemberSearch.Text, StringComparison.CurrentCultureIgnoreCase) ||
+                conversation.Fingerprint.Contains(MemberSearch.Text, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        AvailableMemberList.ItemsSource = candidates;
+        AvailableMemberList.Visibility = _isChoosingMembers && candidates.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        AddMemberExplanation.Visibility = _isChoosingMembers && group.OwnerFingerprint == AppSession.Current.Identity?.Fingerprint ? Visibility.Visible : Visibility.Collapsed;
+        AvailableMembersEmpty.Visibility = _isChoosingMembers && candidates.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        AddMemberActions.Visibility = _isChoosingMembers ? Visibility.Visible : Visibility.Collapsed;
+        AddMemberButton.IsEnabled = !_isChoosingMembers && group.OwnerFingerprint == AppSession.Current.Identity?.Fingerprint &&
+            group.Members.Count < GroupConversation.MaximumMembers && allMembersOnline && !hasPendingTransaction && candidates.Length > 0 && !_membershipChangeInFlight;
+        MemberConstraint.Text = !allMembersOnline
+            ? "有成员离线。添加或移除成员、群主转让暂不可用；请等待自动重连后再操作。"
+            : group.Members.Count >= GroupConversation.MaximumMembers
+                ? "群聊已达到 20 人上限；如需添加成员，请先移除一位成员。"
+                : "成员名单变更需要所有成员在线并明确确认；群聊最多 20 人（含本机）。";
+    }
+
+    private async void OnMemberSearchChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_selected is not null) RefreshSelection();
     }
 
     private StackPanel BuildMessageRow(GroupMessageEnvelope message)
     {
-        var row = new StackPanel { Spacing = 3, Margin = new Thickness(4, 8, 4, 8) };
-        string sender = _selected?.Members.FirstOrDefault(m => m.Fingerprint == message.SenderFingerprint)?.DisplayName ?? message.SenderFingerprint;
-        row.Children.Add(new TextBlock { Text = $"{sender} · {message.Date.ToLocalTime():yyyy-MM-dd HH:mm}", FontSize = 11 });
-        row.Children.Add(new TextBlock { Text = message.Kind == GroupMessageKind.Text ? message.Text ?? "" : $"{(message.Kind == GroupMessageKind.Image ? "图片" : "文件")}: {message.FileMetadata?.FileName}", TextWrapping = TextWrapping.Wrap, FontSize = 14 });
+        var row = new StackPanel { Spacing = 4, Margin = new Thickness(4, 8, 4, 8) };
+        string? localFingerprint = AppSession.Current.Identity?.Fingerprint;
+        bool isLocal = message.SenderFingerprint == localFingerprint;
+        string sender = isLocal ? "我" : _selected?.Members.FirstOrDefault(m => m.Fingerprint == message.SenderFingerprint)?.DisplayName ?? message.SenderFingerprint;
+        string? avatarId = isLocal ? AppSession.Current.Settings.AvatarId : AppSession.Current.Settings.GetPeerAvatarId(message.SenderFingerprint);
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, VerticalAlignment = VerticalAlignment.Center };
+        header.Children.Add(new Image { Source = AvatarCatalog.GetImageSource(avatarId), Width = 24, Height = 24, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill });
+        header.Children.Add(new TextBlock { Text = $"{sender} · {message.Date.ToLocalTime():yyyy-MM-dd HH:mm}", FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(header);
+        row.Children.Add(new TextBlock { Text = message.Kind == GroupMessageKind.Text ? message.Text ?? "" : $"{(message.Kind == GroupMessageKind.Image ? "图片" : "文件")}: {message.FileMetadata?.FileName}", TextWrapping = TextWrapping.Wrap, FontSize = 14, Margin = new Thickness(31, 0, 0, 0) });
         return row;
     }
 
@@ -260,9 +428,12 @@ public sealed partial class GroupsPage : Page
             string description = approval.Invitation is { } invite
                 ? $"{approval.PeerName} 邀请你加入“{invite.Name}”"
                 : approval.LeaveRequest is { } leave
-                    ? $"{approval.PeerName} 申请退出群组“{Service.Store.GetGroup(leave.GroupID)?.Name ?? "群组"}”"
+                    ? $"{approval.PeerName} 申请退出群聊“{Service.Store.GetGroup(leave.GroupID)?.Name ?? "群聊"}”"
                     : $"{approval.PeerName} 请求发送文件“{approval.File?.Metadata.FileName}”";
-            card.Children.Add(new TextBlock { Text = description, TextWrapping = TextWrapping.Wrap });
+            var identityRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+            identityRow.Children.Add(new Image { Source = AvatarCatalog.GetImageSource(AppSession.Current.Settings.GetPeerAvatarId(approval.PeerFingerprint)), Width = 34, Height = 34, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill });
+            identityRow.Children.Add(new TextBlock { Text = description, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center });
+            card.Children.Add(identityRow);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             var accept = new Button { Content = approval.LeaveRequest is null ? "接受" : "批准退出" }; accept.Click += (_, _) => Decide(approval.Id, true, card);
             var decline = new Button { Content = "拒绝" }; decline.Click += (_, _) => Decide(approval.Id, false, card);
@@ -285,7 +456,14 @@ public sealed partial class GroupsPage : Page
         foreach (var op in Service.Operations.Where(op => _selected is null || op.GroupID == _selected.Id))
         {
             var box = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 4, 0, 4), Tag = "Operation:" + op.GroupID };
-            box.Children.Add(new TextBlock { Text = op.Pending ? $"成员事务处理中{(op.Stage is null ? "" : " · " + op.Stage)}" : "事务存在错误" , VerticalAlignment = VerticalAlignment.Center });
+            string stageText = op.Stage switch
+            {
+                V4GroupMembershipStage.Preparing => "成员变更等待成员确认",
+                V4GroupMembershipStage.Committing => "成员名单提交待完成",
+                V4GroupMembershipStage.Aborting => "取消成员变更待确认",
+                _ => "成员事务状态未知"
+            };
+            box.Children.Add(new TextBlock { Text = op.Pending ? stageText : "成员事务存在错误" , VerticalAlignment = VerticalAlignment.Center });
             if (!string.IsNullOrWhiteSpace(op.Error)) box.Children.Add(new TextBlock { Text = op.Error, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 });
             if (op.Pending)
             {
@@ -336,68 +514,122 @@ public sealed partial class GroupsPage : Page
 
     private DataTemplate PeerTemplate()
     {
-        var xaml = "<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><StackPanel Padding='8,6'><TextBlock Text='{Binding Name}' FontWeight='SemiBold'/><TextBlock Text='{Binding Fingerprint}' FontSize='10' TextWrapping='Wrap'/></StackPanel></DataTemplate>";
+        var xaml = "<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><StackPanel Orientation='Horizontal' Spacing='9' Padding='8,6'><Image Source='{Binding AvatarImage}' Width='34' Height='34' Stretch='UniformToFill'/><StackPanel VerticalAlignment='Center'><TextBlock Text='{Binding Name}' FontWeight='SemiBold'/><TextBlock Text='已连接，可邀请' FontSize='10' Foreground='{ThemeResource TextFillColorSecondaryBrush}'/></StackPanel></StackPanel></DataTemplate>";
         return (DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load(xaml);
     }
 
-    private async void OnEditMembersClick(object sender, RoutedEventArgs e)
+    private void OnAddMemberClick(object sender, RoutedEventArgs e)
     {
-        if (_selected is null || Service is null) return;
+        if (_selected is null) return;
+        _isChoosingMembers = true;
+        RefreshSelection();
+        if (AvailableMemberList.Items.Count == 0)
+        {
+            _isChoosingMembers = false;
+            RefreshSelection();
+            SetStatus("没有可添加的已连接设备。", InfoBarSeverity.Warning);
+        }
+    }
+
+    private void OnCancelAddMembersClick(object sender, RoutedEventArgs e)
+    {
+        _isChoosingMembers = false;
+        AvailableMemberList.SelectedItems.Clear();
+        if (_selected is not null) RefreshSelection();
+    }
+
+    private async void OnApplyAddMembersClick(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null || Service is null || _membershipChangeInFlight) return;
         var group = _selected;
-        var currentFingerprints = group.Members
-            .Select(member => ConversationHistory.NormalizeFingerprint(member.Fingerprint))
-            .ToHashSet(StringComparer.Ordinal);
-        var connected = AppSession.Current.Conversations.Where(IsEligibleConversation).ToArray();
-        var connectedFingerprints = connected
-            .Select(conversation => ConversationHistory.NormalizeFingerprint(conversation.Fingerprint))
-            .ToHashSet(StringComparer.Ordinal);
-        var additions = connected.Where(conversation =>
-            !currentFingerprints.Contains(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint)))
-            .Select(conversation => new GroupMember(conversation.Fingerprint, conversation.Name)).ToArray();
-        var removable = group.Members.Where(member => member.Fingerprint != group.OwnerFingerprint &&
-            connectedFingerprints.Contains(ConversationHistory.NormalizeFingerprint(member.Fingerprint))).ToArray();
-        var addList = new ListView { SelectionMode = ListViewSelectionMode.Multiple, ItemsSource = additions, MaxHeight = 220, ItemTemplate = MemberTemplate() };
-        var removeList = new ListView { SelectionMode = ListViewSelectionMode.Multiple, ItemsSource = removable, MaxHeight = 220, ItemTemplate = MemberTemplate() };
-        var content = new StackPanel { Spacing = 8 };
-        content.Children.Add(new TextBlock { Text = "成员变更要求当前群成员与新增成员均保持 v4 连接；新成员须先接受邀请。群组上限为 20 人，包含本机。" });
-        content.Children.Add(new TextBlock { Text = "添加成员" }); content.Children.Add(addList);
-        content.Children.Add(new TextBlock { Text = "移除成员" }); content.Children.Add(removeList);
-        var dialog = new ContentDialog { Title = "变更群组成员", Content = content, PrimaryButtonText = "应用变更", CloseButtonText = "取消" };
-        if (await UiPromptService.Current.ShowAsync(dialog) != ContentDialogResult.Primary) return;
+        var selected = AvailableMemberList.SelectedItems.OfType<ConversationItem>().Where(IsEligibleConversation).ToArray();
+        if (selected.Length == 0) { SetStatus("请选择至少一台已连接设备。", InfoBarSeverity.Warning); return; }
+        if (group.Members.Count + selected.Length > GroupConversation.MaximumMembers)
+        {
+            SetStatus("群组最多 20 人，包含本机；请减少所选成员。", InfoBarSeverity.Warning);
+            return;
+        }
+        if (!AllRemoteMembersConnected(group))
+        {
+            SetStatus("当前有群成员离线；成员名单变更暂不可用。", InfoBarSeverity.Warning);
+            RefreshSelection();
+            return;
+        }
+        var proposed = group.Members.Concat(selected.Select(conversation => new GroupMember(conversation.Fingerprint, conversation.Name))).ToArray();
+        _membershipChangeInFlight = true;
+        _isChoosingMembers = false;
+        RefreshSelection();
         try
         {
-            var add = addList.SelectedItems.OfType<GroupMember>().ToArray();
-            var remove = removeList.SelectedItems.OfType<GroupMember>().Select(member => member.Fingerprint).ToHashSet(StringComparer.Ordinal);
-            if (add.Length == 0 && remove.Count == 0) return;
-            if (group.Members.Count - remove.Count + add.Length > GroupConversation.MaximumMembers)
-                throw new InvalidOperationException("群组最多 20 人，包含本机；请减少所选成员。");
-            var proposed = group.Members.Where(member => !remove.Contains(member.Fingerprint)).Concat(add).ToArray();
             await Service.ChangeMembersAsync(group.Id, proposed);
-            SetStatus("成员变更已确认。", InfoBarSeverity.Success);
+            SetStatus("邀请已发送；成员确认和名单事务会保留在操作状态中。", InfoBarSeverity.Success);
         }
-        catch (Exception ex) { SetStatus("成员变更未确认完成：" + ErrorText.Describe(ex), InfoBarSeverity.Error); }
-        Refresh();
+        catch (Exception ex) { SetStatus("添加成员未确认完成：" + ErrorText.Describe(ex), InfoBarSeverity.Error); }
+        finally
+        {
+            _membershipChangeInFlight = false;
+            Refresh();
+        }
     }
 
-    private DataTemplate MemberTemplate()
+    private async Task RemoveMemberAsync(GroupConversation group, GroupMember member)
     {
-        var xaml = "<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><StackPanel Padding='8,6'><TextBlock Text='{Binding DisplayName}' FontWeight='SemiBold'/><TextBlock Text='{Binding Fingerprint}' FontSize='10' TextWrapping='Wrap'/></StackPanel></DataTemplate>";
-        return (DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load(xaml);
+        if (Service is null || _membershipChangeInFlight) return;
+        var dialog = new ContentDialog
+        {
+            Title = "确认移出群聊？",
+            Content = $"将“{member.DisplayName ?? member.Fingerprint[^8..]}”移出群聊。名单变更需要所有当前成员在线并明确确认。",
+            PrimaryButtonText = "移出群聊",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+        if (await UiPromptService.Current.ShowAsync(dialog) != ContentDialogResult.Primary) return;
+        if (!AllRemoteMembersConnected(group))
+        {
+            SetStatus("当前有群成员离线；移除操作已取消。", InfoBarSeverity.Warning);
+            RefreshSelection();
+            return;
+        }
+        _membershipChangeInFlight = true;
+        RefreshSelection();
+        try
+        {
+            await Service.ChangeMembersAsync(group.Id, group.Members.Where(existing => existing.Fingerprint != member.Fingerprint).ToArray());
+            SetStatus("移除请求已提交；成员确认和名单事务会保留在操作状态中。", InfoBarSeverity.Success);
+        }
+        catch (Exception ex) { SetStatus("移出成员未确认完成：" + ErrorText.Describe(ex), InfoBarSeverity.Error); }
+        finally
+        {
+            _membershipChangeInFlight = false;
+            Refresh();
+        }
+    }
+
+    private bool AllRemoteMembersConnected(GroupConversation group)
+    {
+        string? localFingerprint = AppSession.Current.Identity?.Fingerprint;
+        return Service is not null && group.Members.All(member => member.Fingerprint == localFingerprint || Service.IsPeerConnected(member.Fingerprint));
     }
 
     private async void OnLeaveClick(object sender, RoutedEventArgs e)
     {
         if (_selected is not { } group || Service is null) return;
         bool owner = group.OwnerFingerprint == AppSession.Current.Identity?.Fingerprint;
+        if (owner && !AllRemoteMembersConnected(group))
+        {
+            SetStatus("所有现有群成员在线后才能移交群主。", InfoBarSeverity.Warning);
+            RefreshSelection();
+            return;
+        }
         if (owner)
         {
             bool dissolves = group.Members.Count == 1;
             var dialog = new ContentDialog
             {
-                Title = dissolves ? "解散群组？" : "离开并移交群主？",
+                Title = dissolves ? "结束群聊？" : "退出并转让群主？",
                 Content = dissolves
-                    ? "群组将从本机移除，历史消息保留在本地存档中。"
-                    : "服务将随机选择新的群主；此操作需要成员确认，未完成时群组仍保留待处理状态。",
+                    ? "群聊将从本机移除，历史消息保留在本地存档中。"
+                    : "服务将随机选择新的群主；此操作需要成员确认，未完成时群聊仍保留待处理状态。",
                 PrimaryButtonText = "继续", CloseButtonText = "取消"
             };
             if (await UiPromptService.Current.ShowAsync(dialog) != ContentDialogResult.Primary) return;
@@ -405,7 +637,7 @@ public sealed partial class GroupsPage : Page
             {
                 await Service.LeaveAsOwnerAsync(group.Id);
                 bool dissolved = Service.Store.GetGroup(group.Id) is null;
-                SetStatus(dissolved ? "群组已结束并从本机移除。" : "群主已退出，新的群主已随机选定。", InfoBarSeverity.Success);
+                SetStatus(dissolved ? "群聊已结束并从本机移除。" : "群主已退出，新的群主已随机选定。", InfoBarSeverity.Success);
             }
             catch (Exception ex) { SetStatus("群主离开事务未确认完成：" + ErrorText.Describe(ex), InfoBarSeverity.Error); }
             Refresh();

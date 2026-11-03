@@ -74,6 +74,26 @@ struct FeigeMacApp: App {
         }
         .defaultSize(width: 620, height: 760)
         .windowResizability(.contentSize)
+
+        MenuBarExtra {
+            MenuBarContent(model: model, showMainWindow: { appDelegate.showMainWindow() })
+        } label: {
+            Image(systemName: model.totalUnread > 0 ? "bubble.left.and.exclamationmark.bubble.right.fill" : "bubble.left.and.bubble.right")
+                .accessibilityLabel(model.totalUnread > 0 ? "飞鸽快传，\(model.totalUnread) 条未读" : "飞鸽快传")
+        }
+    }
+}
+
+private struct MenuBarContent: View {
+    @ObservedObject var model: TransferModel
+    let showMainWindow: () -> Void
+
+    var body: some View {
+        Text(model.totalUnread > 0 ? "\(model.totalUnread) 条未读消息" : "没有未读消息")
+        Divider()
+        Button("显示主窗口", action: showMainWindow)
+        Button("退出飞鸽快传") { NSApplication.shared.terminate(nil) }
+            .keyboardShortcut("q")
     }
 }
 

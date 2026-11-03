@@ -31,7 +31,7 @@ public sealed class MdnsAdvertiser : IAsyncDisposable
     /// <param name="device">Identity and display name to advertise.</param>
     /// <param name="port">TCP port of the local <see cref="PeerListener"/>.</param>
     /// <param name="addresses">Addresses to publish; defaults to <see cref="FeigeService.LocalAddresses"/>.</param>
-    public MdnsAdvertiser(IMdnsTransport transport, LocalDevice device, int port, IReadOnlyList<IPAddress>? addresses = null, int version = 1)
+    public MdnsAdvertiser(IMdnsTransport transport, LocalDevice device, int port, IReadOnlyList<IPAddress>? addresses = null, int version = 1, string? avatarId = null)
     {
         ArgumentNullException.ThrowIfNull(transport);
         ArgumentNullException.ThrowIfNull(device);
@@ -48,7 +48,7 @@ public sealed class MdnsAdvertiser : IAsyncDisposable
         HostName = new DnsName(
             FeigeService.TruncateUtf8($"{Environment.MachineName.ToLowerInvariant()}-feige", 63),
             FeigeService.DomainLabel);
-        Txt = FeigeService.BuildTxt(device.DeviceName, device.Fingerprint, version);
+        Txt = FeigeService.BuildTxt(device.DeviceName, device.Fingerprint, version, avatarId);
         Port = port;
 
         _transport.DatagramReceived += OnDatagramReceived;

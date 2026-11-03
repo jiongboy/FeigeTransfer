@@ -29,7 +29,7 @@ public enum ConnectionService {
                   identityAuthorizationTimeout.isFinite, identityAuthorizationTimeout > 0 else {
                 throw AuthenticatedStreamError.timeout
             }
-            guard protocolVersion == 3 || protocolVersion == 4 || protocolVersion == 5 else { throw HandshakeError.invalidOffer }
+            guard (3...6).contains(protocolVersion) else { throw HandshakeError.invalidOffer }
             // The responder selects exactly the initiator's supported version. The initiator uses
             // the explicitly selected version; neither path retries with another version.
             let (handshake, pending) = try await deadline(identityAuthorizationTimeout + 2 * handshakeTimeout,

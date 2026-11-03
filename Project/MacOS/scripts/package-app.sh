@@ -23,6 +23,13 @@ cp Resources/Info.plist "$app/Contents/Info.plist"
 cp "$repo_root/Project/Ui/Branding/FeigeIconV1/Feige.icns" "$app/Contents/Resources/Feige.icns"
 # The update trust root ships inside the signed bundle; it is never downloaded separately.
 cp Updates/UpdateSource.json "$app/Contents/Resources/Updates/UpdateSource.json"
+# Avatars load from Contents/Resources/Avatars. SwiftPM's FeigeMac_FeigeMac.bundle is deliberately not
+# copied: its generated accessor expects it at the .app root, which breaks the code-signature seal.
+mkdir -p "$app/Contents/Resources/Avatars"
+cp Sources/Resources/Avatars/*.png "$app/Contents/Resources/Avatars/"
+for avatar in bird cat fox panda bear fish rocket sun star leaf; do
+    [[ -f "$app/Contents/Resources/Avatars/$avatar.png" ]] || { echo "Missing avatar resource: $avatar.png" >&2; exit 1; }
+done
 plutil -lint "$app/Contents/Info.plist"
 app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 output_dir="$repo_root/Release/MacOS/$app_version"

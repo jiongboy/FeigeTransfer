@@ -16,6 +16,13 @@ struct DeviceSettings: Codable {
     var backgroundTipSeen: Bool = false
     var connectionTipSeen: Bool = false
     var legacyReviewPending: Bool = false
+    var avatarId: String = AvatarID.default
+    var peerAvatarIds: [String: String] = [:]
+    var probeTargets: [String] = []
+    var allowsProbes: Bool = true
+    /// Full fingerprints whose inbound connections are approved without a prompt and that are
+    /// dialed automatically when discovered. File approval is unaffected.
+    var trustedPeers: [String] = []
 
     static var `default`: DeviceSettings {
         let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
@@ -26,12 +33,14 @@ struct DeviceSettings: Codable {
     private enum CodingKeys: String, CodingKey {
         case deviceName, receiveDirectory, firstRunComplete, setupStep
         case autoCheckUpdates, notificationsEnabled, backgroundTipSeen, connectionTipSeen, legacyReviewPending
+        case avatarId, peerAvatarIds, probeTargets, allowsProbes, trustedPeers
     }
 
     /// Memberwise initializer kept explicit because declaring `init(from:)` suppresses synthesis.
     init(deviceName: String, receiveDirectory: URL, firstRunComplete: Bool, setupStep: Int? = nil,
          autoCheckUpdates: Bool = true, notificationsEnabled: Bool = false, backgroundTipSeen: Bool = false,
-         connectionTipSeen: Bool = false, legacyReviewPending: Bool = false) {
+         connectionTipSeen: Bool = false, legacyReviewPending: Bool = false, avatarId: String = AvatarID.default,
+         peerAvatarIds: [String: String] = [:]) {
         self.deviceName = deviceName
         self.receiveDirectory = receiveDirectory
         self.firstRunComplete = firstRunComplete
@@ -41,6 +50,16 @@ struct DeviceSettings: Codable {
         self.backgroundTipSeen = backgroundTipSeen
         self.connectionTipSeen = connectionTipSeen
         self.legacyReviewPending = legacyReviewPending
+        self.avatarId = AvatarID.normalize(avatarId)
+        self.peerAvatarIds = Self.normalizedPeerAvatarIds(peerAvatarIds)
+    }
+
+    private static func normalizedPeerAvatarIds(_ values: [String: String]) -> [String: String] {
+        let entries = values.compactMap { entry -> (String, String)? in
+            guard let fingerprint = AvatarID.normalizeFingerprint(entry.key), AvatarID.isKnown(entry.value) else { return nil }
+            return (fingerprint, entry.value)
+        }
+        return Dictionary(entries.suffix(256), uniquingKeysWith: { _, latest in latest })
     }
 
     /// Synthesized decoding would fail on every older settings file because missing keys do not
@@ -56,13 +75,29 @@ struct DeviceSettings: Codable {
         backgroundTipSeen = try values.decodeIfPresent(Bool.self, forKey: .backgroundTipSeen) ?? false
         connectionTipSeen = try values.decodeIfPresent(Bool.self, forKey: .connectionTipSeen) ?? false
         legacyReviewPending = try values.decodeIfPresent(Bool.self, forKey: .legacyReviewPending) ?? false
+        avatarId = AvatarID.normalize(try values.decodeIfPresent(String.self, forKey: .avatarId))
+        peerAvatarIds = Self.normalizedPeerAvatarIds(try values.decodeIfPresent([String: String].self, forKey: .peerAvatarIds) ?? [:])
+        probeTargets = try values.decodeIfPresent([String].self, forKey: .probeTargets) ?? []
+        allowsProbes = try values.decodeIfPresent(Bool.self, forKey: .allowsProbes) ?? true
+        trustedPeers = Self.normalizedTrustedPeers(try values.decodeIfPresent([String].self, forKey: .trustedPeers) ?? [])
+    }
+
+    static func normalizedTrustedPeers(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap(AvatarID.normalizeFingerprint).filter { seen.insert($0).inserted }.suffix(256).map { $0 }
     }
 }
 
 enum SettingsError: LocalizedError {
     case invalidDeviceName
+    case invalidProbeTarget
 
-    var errorDescription: String? { "设备名称为空、过长或包含换行等控制字符，请修改后重试。" }
+    var errorDescription: String? {
+        switch self {
+        case .invalidDeviceName: return "设备名称为空、过长或包含换行等控制字符，请修改后重试。"
+        case .invalidProbeTarget: return "只能填写私网 IPv4 地址或 /24–/32 网段，最多 16 项。"
+        }
+    }
 }
 
 struct TransferRecord: Identifiable, Codable {
@@ -81,6 +116,12 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     @Published var settings = DeviceSettings.default
     @Published var records: [TransferRecord] = []
     @Published var messages: [ChatMessage] = []
+    @Published private(set) var probePortUnavailable = false
+    /// Local unread counts keyed by conversation: a peer fingerprint, or `group:<UUID>`.
+    @Published var unreadCounts: [String: Int] = [:]
+    /// The conversation the main window shows; arrivals there are read while the app is active.
+    var visibleConversationKey: String?
+    let unreadURL: URL
     @Published private(set) var groups: [GroupConversation] = []
     @Published private(set) var groupMessages: [GroupMessageEnvelope] = []
     @Published private(set) var groupDeliveries: [GroupMessageDelivery] = []
@@ -88,7 +129,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     @Published private(set) var pendingGroupFileApprovals: [PendingGroupFileApproval] = []
     @Published private(set) var pendingGroupInvitations: [PendingGroupInvitation] = []
     @Published private(set) var pendingGroupLeaveRequests: [PendingGroupLeaveRequest] = []
-    @Published private(set) var hiddenConversationIDs: Set<String> = []
+    @Published private(set) var pendingGroupLeaveGroupIDs: Set<UUID> = []
+    @Published private(set) var hiddenConversationIDs: Set<String> = [] { didSet { updateDockBadge() } }
     @Published var connectedPeerID = ""
     @Published var isSendingText = false
     @Published private(set) var connectedPeerIDs: Set<String> = []
@@ -96,7 +138,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     @Published var listenerPort: UInt16?
     @Published var nearbyDevices: [LANDevice] = [] {
         didSet {
-            if isIdentityReady { connectEligibleGroupPeers() }
+            if isIdentityReady {
+                connectEligibleGroupPeers()
+                connectTrustedPeers()
+            }
         }
     }
     @Published var localAddress = LANAddress.currentIPv4()
@@ -116,6 +161,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     @Published var isConnected = false
     @Published var connectedPeerName = ""
     @Published var pendingConnectionPeerName: String?
+    @Published var pendingConnectionPeerFingerprint: String?
     @Published var isSending = false
     @Published var isReceivingFile = false
     @Published var transferProgress: Double = 0
@@ -148,7 +194,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private let draftsURL: URL
     private let supportDirectory: URL
     private let lan = LANService()
-    private let notifier = TransferNotifier()
+    let notifier = TransferNotifier()
     private var networkMonitor: NWPathMonitor?
     private let networkQueue = DispatchQueue(label: "com.feige.network-monitor")
     private var networkRefreshTask: Task<Void, Never>?
@@ -210,7 +256,20 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private var connectingServiceNames: Set<String> = []
     private var approvalContinuations: [UUID: CheckedContinuation<Bool, Error>] = [:]
     private var approvalPeerNames: [UUID: String] = [:]
+    private var approvalPeerFingerprints: [UUID: String] = [:]
     private var approvalOrder: [UUID] = []
+    private struct TrustedDialState {
+        var failures = 0
+        var nextAttempt = Date.distantPast
+        /// Set by a declined dial or a manual disconnect; cleared by a manual connect.
+        var suppressed = false
+        var firstSeen: Date?
+    }
+    private var trustedDialStates: [String: TrustedDialState] = [:]
+    private var trustedDialTokens: [UUID: String] = [:]
+    private var trustedDialTimer: Task<Void, Never>?
+    private var isAutoDialing = false
+    private static let trustedDialBackoff: [TimeInterval] = [30, 60, 300, 1800]
     /// Pending file confirmations are isolated by peer and transfer ID.
     private struct GroupFileJob { let envelope: GroupMessageEnvelope; let url: URL }
     private var groupFileQueues: [String: [GroupFileJob]] = [:]
@@ -259,7 +318,9 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         historyURL = support.appendingPathComponent("history.json")
         messagesURL = support.appendingPathComponent("messages.json")
         draftsURL = support.appendingPathComponent("drafts.json")
+        unreadURL = support.appendingPathComponent("unread.json")
         load()
+        loadUnreadCounts()
         drafts = (try? Data(contentsOf: draftsURL)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
         if makeUpdates {
             let controller = UpdateController(supportDirectory: support, version: updateVersion, source: updateSource)
@@ -281,6 +342,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             guard let self else { connection.cancel(); return }
             self.accept(connection)
         }
+        lan.onProbePortUnavailable = { [weak self] in self?.probePortUnavailable = true }
         startNetworkMonitoring()
         if settings.notificationsEnabled {
             Task { await self.refreshNotifierStatus() }
@@ -293,6 +355,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             return
         }
         await prepareIdentity()
+        startOutboxExpiryTimer()
         if settings.firstRunComplete {
             updates?.start()
             updates?.preferencesChanged(autoCheckEnabled: settings.autoCheckUpdates, setupEnded: true)
@@ -347,7 +410,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         }
     }
 
-    func saveSettings(deviceName: String, receiveDirectory: URL) throws {
+    func saveSettings(deviceName: String, receiveDirectory: URL, avatarId: String? = nil) throws {
         let trimmed = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 48, trimmed.utf8.count <= 128,
               !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
@@ -358,6 +421,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         var updated = settings
         updated.deviceName = trimmed
         updated.receiveDirectory = receiveDirectory
+        updated.avatarId = AvatarID.normalize(avatarId ?? updated.avatarId)
         updated.firstRunComplete = true
         updated.setupStep = nil
         try persist(updated, to: settingsURL)
@@ -366,7 +430,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         if started && isIdentityReady { refreshDiscovery() }
     }
 
-    func saveSetupDraft(deviceName: String, receiveDirectory: URL, nextStep: Int) throws {
+    func saveSetupDraft(deviceName: String, receiveDirectory: URL, nextStep: Int, avatarId: String? = nil) throws {
         let trimmed = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 48, trimmed.utf8.count <= 128,
               !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
@@ -376,10 +440,58 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         var updated = settings
         updated.deviceName = trimmed
         updated.receiveDirectory = receiveDirectory
+        updated.avatarId = AvatarID.normalize(avatarId ?? updated.avatarId)
         updated.firstRunComplete = false
         updated.setupStep = nextStep
         try persist(updated, to: settingsURL)
         settings = updated
+    }
+
+    func saveAvatarId(_ avatarId: String) throws {
+        let normalized = AvatarID.normalize(avatarId)
+        guard settings.avatarId != normalized else { return }
+        var updated = settings
+        updated.avatarId = normalized
+        try persist(updated, to: settingsURL)
+        settings = updated
+        if started && isIdentityReady { refreshDiscovery() }
+    }
+
+    func avatarId(for fingerprint: String, hint: String? = nil) -> String {
+        if let normalized = AvatarID.normalizeFingerprint(fingerprint),
+           let saved = settings.peerAvatarIds[normalized], AvatarID.isKnown(saved) {
+            return saved
+        }
+        return AvatarID.normalize(hint)
+    }
+
+    /// Called only after an authenticated connection reports its full device fingerprint.
+    private func cacheDiscoveredAvatar(for peerFingerprint: String) {
+        guard let fingerprint = AvatarID.normalizeFingerprint(peerFingerprint),
+              let device = nearbyDevices.first(where: { AvatarID.normalizeFingerprint($0.fingerprintHint) == fingerprint }),
+              let avatarId = device.avatarId, AvatarID.isKnown(avatarId),
+              settings.peerAvatarIds[fingerprint] != avatarId else { return }
+        var updated = settings
+        updated.peerAvatarIds[fingerprint] = avatarId
+        if updated.peerAvatarIds.count > 256 {
+            let keysToRemove = updated.peerAvatarIds.keys.sorted().filter { $0 != fingerprint }
+                .prefix(updated.peerAvatarIds.count - 256)
+            for key in keysToRemove { updated.peerAvatarIds.removeValue(forKey: key) }
+        }
+        do {
+            try persist(updated, to: settingsURL)
+            settings = updated
+        } catch { }
+    }
+
+    func isGroupLeaveRequestPending(_ groupID: UUID) -> Bool {
+        pendingGroupLeaveGroupIDs.contains(groupID)
+    }
+
+    private func refreshPendingGroupLeaveGroupIDs() {
+        pendingGroupLeaveGroupIDs = Set(pendingGroupLeaveMessagesByGroup.compactMap { entry in
+            entry.value.isEmpty ? nil : entry.key
+        })
     }
 
     func deferFirstRunSetup() { isFirstRun = false }
@@ -538,6 +650,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     private func cleanupOrphanedTransfers(in directory: URL) throws {
         _ = try TemporaryFileSinkRecovery.removeOrphanedFiles(in: directory)
+        ResumableStorageCleanup.removeExpired(in: directory)
     }
 
     func refreshDiscovery() {
@@ -546,8 +659,21 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             if !isPreparingIdentity { Task { await start() } }
             return
         }
-        do { try lan.start(deviceName: settings.deviceName, fingerprint: identityFingerprint) }
+        do { try lan.start(deviceName: settings.deviceName, fingerprint: identityFingerprint, avatarId: settings.avatarId) }
         catch { errorMessage = "无法启动局域网服务：\(error.localizedDescription)" }
+    }
+
+    /// Replaces the saved subnets and restarts discovery so the first round runs at once.
+    func saveProbeSettings(targets: [String], allowsProbes: Bool) throws {
+        let cleaned = targets.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard ProbeTargets.hosts(in: cleaned) != nil else { throw SettingsError.invalidProbeTarget }
+        var updated = settings
+        updated.probeTargets = cleaned
+        updated.allowsProbes = allowsProbes
+        try persist(updated, to: settingsURL)
+        settings = updated
+        probePortUnavailable = false
+        if started { refreshDiscovery() }
     }
 
     func refreshPeers() {
@@ -588,14 +714,14 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    func chooseAndSendFiles(imagesOnly: Bool = false) {
+    func chooseAndSendFiles(imagesOnly: Bool = false, to peerID: String? = nil) {
         let panel = NSOpenPanel()
-        panel.title = imagesOnly ? "选择要发送的图片" : "选择要发送的文件"
+        panel.title = imagesOnly ? "选择要发送的图片" : "选择要发送的文件或文件夹"
         if imagesOnly { panel.allowedContentTypes = [.image] }
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = !imagesOnly
         panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK { startSending(panel.urls) }
+        if panel.runModal() == .OK { startSending(panel.urls, to: peerID ?? connectedPeerID) }
     }
 
     func chooseAndSendGroupFiles(groupID: UUID, imagesOnly: Bool = false) {
@@ -817,18 +943,21 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     }
 
     func requestConnection(to device: LANDevice, pendingFiles: [URL] = []) {
-        let selectedVersion: UInt16 = device.protocolVersions.contains(5) ? 5 :
-            device.protocolVersions.contains(4) ? 4 : 3
+        let selectedVersion: UInt16 = device.protocolVersions.contains(6) ? 6 :
+            device.protocolVersions.contains(5) ? 5 : device.protocolVersions.contains(4) ? 4 : 3
         requestConnection(to: device, protocolVersion: selectedVersion, pendingFiles: pendingFiles)
     }
 
     func requestConnection(to device: LANDevice, protocolVersion: UInt16, pendingFiles: [URL] = []) {
-        guard protocolVersion == 3 || protocolVersion == 4 || protocolVersion == 5,
+        guard (3...6).contains(protocolVersion),
               device.protocolVersions.contains(protocolVersion),
               !connectingServiceNames.contains(device.serviceName), activeConnectionTokens.count < 39,
               directPeerIDs.count + directConnectionTokens.count < 20 else { return }
         guard settings.firstRunComplete else { isFirstRun = true; return }
         guard isIdentityReady else { errorMessage = "请先完成启动时的系统钥匙串授权，再连接设备。"; return }
+        if !isAutoDialing, let peerID = AvatarID.normalizeFingerprint(device.fingerprintHint) {
+            trustedDialStates[peerID] = nil
+        }
         shouldSuggestNetworkHelp = false
         connectingServiceNames.insert(device.serviceName)
         let stream = NetworkByteStream(endpoint: device.endpoint)
@@ -874,7 +1003,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     /// Why `requestConnection(to:)` would currently decline, or `ok`. The guard rejects silently
     /// in production; acceptance runs need the reason.
     func connectionReadiness(for device: LANDevice, protocolVersion: UInt16 = 5) -> String {
-        if !(3...5).contains(protocolVersion) { return "unsupported-version" }
+        if !(3...6).contains(protocolVersion) { return "unsupported-version" }
         if !device.protocolVersions.contains(protocolVersion) { return "peer-lacks-version" }
         if connectingServiceNames.contains(device.serviceName) { return "already-connecting" }
         if activeConnectionTokens.count >= 39 { return "connection-limit" }
@@ -936,15 +1065,20 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     guard let self else { return false }
                     return try await self.askForConnection(peer, generation: token)
                 }
+                trustedDialTokens.removeValue(forKey: token)
                 guard activeConnectionTokens.contains(token), !Task.isCancelled else { connection.close(); return }
                 install(connection, generation: token)
                 if !pendingFiles.isEmpty { startSending(pendingFiles, to: connection.peerFingerprint) }
             } catch {
+                let trustedPeerID = trustedDialTokens.removeValue(forKey: token)
                 guard activeConnectionTokens.contains(token) else { return }
                 finishConnectionAttempt(token)
                 let wasRejected = (error as? ConnectionError).map {
                     if case .rejected = $0 { return true }; return false
                 } == true
+                if let trustedPeerID, !(error is CancellationError) {
+                    noteTrustedDialFailure(trustedPeerID, rejected: wasRejected)
+                }
                 let rejectedLocally = role == .responder && wasRejected
                 if !rejectedLocally && !(error is CancellationError) {
                     errorMessage = error.localizedDescription
@@ -1006,11 +1140,16 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             let isKnownGroupMember = groups.contains { group in group.members.contains { $0.fingerprint == peer.peerFingerprint } }
             guard isKnownGroupMember, groupOnlyPeerIDs.count + pendingGroupConnectionCount < 19 else { return false }
         }
+        if isTrustedPeer(peer.peerFingerprint), trustedDialStates[trustKey(peer.peerFingerprint)]?.suppressed != true {
+            return true
+        }
         let id = UUID()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             guard activeConnectionTokens.contains(token) else { throw CancellationError() }
             approvalPeerNames[id] = peer.peer.deviceName
+            approvalPeerFingerprints[id] = peer.peerFingerprint
+            cacheDiscoveredAvatar(for: peer.peerFingerprint)
             approvalOrder.append(id)
             refreshPendingApprovalName()
             return try await withCheckedThrowingContinuation { approvalContinuations[id] = $0 }
@@ -1022,19 +1161,27 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private func cancelConnectionApproval(_ id: UUID) {
         let continuation = approvalContinuations.removeValue(forKey: id)
         approvalPeerNames.removeValue(forKey: id)
+        approvalPeerFingerprints.removeValue(forKey: id)
         approvalOrder.removeAll { $0 == id }
         refreshPendingApprovalName()
         continuation?.resume(returning: false)
     }
 
     private func refreshPendingApprovalName() {
-        pendingConnectionPeerName = approvalOrder.first.flatMap { approvalPeerNames[$0] }
+        let currentID = approvalOrder.first
+        pendingConnectionPeerName = currentID.flatMap { approvalPeerNames[$0] }
+        pendingConnectionPeerFingerprint = currentID.flatMap { approvalPeerFingerprints[$0] }
     }
 
-    func approveConnection(_ accepted: Bool) {
+    /// `trust` also adds the peer to the persistent contacts when the request is accepted.
+    func approveConnection(_ accepted: Bool, trust: Bool = false) {
         guard let id = approvalOrder.first else { return }
+        if accepted, trust, let fingerprint = approvalPeerFingerprints[id] {
+            try? setTrustedPeer(fingerprint, trusted: true)
+        }
         let continuation = approvalContinuations.removeValue(forKey: id)
         approvalPeerNames.removeValue(forKey: id)
+        approvalPeerFingerprints.removeValue(forKey: id)
         approvalOrder.removeFirst()
         refreshPendingApprovalName()
         continuation?.resume(returning: accepted)
@@ -1042,6 +1189,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     private func install(_ connection: FileConnection, generation token: UUID) {
         let peerID = connection.peerFingerprint
+        if trustedDialStates[trustKey(peerID)]?.suppressed != true { trustedDialStates[trustKey(peerID)] = nil }
+        cacheDiscoveredAvatar(for: peerID)
         var purpose = purposeByToken[token] ?? .direct
         if case .direct = purpose, !directPeerIDs.contains(peerID), !messages.contains(where: { $0.peerID == peerID }) {
             if let group = groups.first(where: { $0.members.contains(where: { $0.fingerprint == peerID }) }) {
@@ -1110,6 +1259,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         restoreConversation(peerID)
         connectionState = "已连接：\(connection.peerName)"
         markConnectionTipSeen()
+        defer { flushOutbox(peerID) }
         if !pendingGroupAborts.isEmpty {
             Task { @MainActor [weak self] in await self?.retryPendingGroupAborts() }
         }
@@ -1181,8 +1331,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         } else {
             messages.append(ChatMessage(id: metadata.transferID, peerID: peerID, peerName: peer,
                                         direction: .received,
-                                        kind: metadata.kind == .image ? .image : .file,
-                                        fileName: metadata.fileName, size: Int64(metadata.size),
+                                        kind: metadata.kind == .image && metadata.folder == nil ? .image : .file,
+                                        fileName: metadata.displayName, size: Int64(metadata.displaySize),
                                         status: .awaitingApproval))
             saveMessages()
         }
@@ -1283,6 +1433,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         addRecord(TransferRecord(fileName: metadata.fileName, size: Int64(metadata.size), direction: .received,
                                  peerName: "\(channelsByPeer[peerID]?.peerName ?? peerID) · 群聊", savedPath: url.path))
         noteFirstSuccessfulTransfer(title: "收到群文件", body: "\(group.name) 中收到 \(metadata.fileName)。")
+        noteIncoming(conversation: Self.groupConversationKey(group.id), title: group.name, body: metadata.fileName, notify: false)
     }
 
     private func metadataKind(_ manifest: GroupFileManifestWire) -> GroupMessageKind {
@@ -1319,24 +1470,26 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         guard activeConnectionTokens.contains(token) else { return }
         receivingPeers.insert(peerID)
         isReceivingFile = !receivingPeers.isEmpty
+        // Folder progress is reported against the whole folder.
+        let total = metadata.displaySize
+        let progress = total == 0 ? 0 : min(1, Double(count) / Double(total))
         if connectedPeerID == peerID {
-            receiveStatus = "正在接收：\(metadata.fileName)"
-            receiveProgress = metadata.size == 0 ? 0 : Double(count) / Double(metadata.size)
+            receiveStatus = metadata.folder.map { "正在接收文件夹 \($0.rootName)：\($0.relativePath)" } ?? "正在接收：\(metadata.fileName)"
+            receiveProgress = progress
         }
         if let index = messages.firstIndex(where: { $0.id == metadata.transferID && $0.peerID == peerID && $0.direction == .received && $0.kind != .text }) {
-            let progress = metadata.size == 0 ? 0 : Double(count) / Double(metadata.size)
             if progress - messages[index].progress >= 0.01 { messages[index].progress = progress }
         } else {
             messages.append(ChatMessage(id: metadata.transferID, peerID: peerID, peerName: peer,
-                                        direction: .received, kind: metadata.kind == .image ? .image : .file,
-                                        fileName: metadata.fileName, size: Int64(metadata.size), status: .sending,
-                                        progress: metadata.size == 0 ? 0 : Double(count) / Double(metadata.size)))
+                                        direction: .received, kind: metadata.kind == .image && metadata.folder == nil ? .image : .file,
+                                        fileName: metadata.displayName, size: Int64(total), status: .sending,
+                                        progress: progress))
         }
     }
 
     private func received(_ metadata: FileMetadata, at url: URL, peer: String, peerID: String, generation token: UUID) {
         guard activeConnectionTokens.contains(token) else { return }
-        addRecord(TransferRecord(fileName: url.lastPathComponent, size: Int64(metadata.size), direction: .received,
+        addRecord(TransferRecord(fileName: url.lastPathComponent, size: Int64(metadata.displaySize), direction: .received,
                                  peerName: peer, savedPath: url.path))
         restoreConversation(peerID)
         if let index = messages.firstIndex(where: { $0.id == metadata.transferID && $0.peerID == peerID && $0.direction == .received && $0.kind != .text }) {
@@ -1352,6 +1505,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             receiveProgress = 1
             receiveStatus = "已接收：\(url.lastPathComponent)"
         }
+        noteIncoming(conversation: peerID, title: peer, body: url.lastPathComponent, notify: false)
         noteFirstSuccessfulTransfer(title: "收到文件", body: "\(peer) 发送了 \(url.lastPathComponent)。")
     }
 
@@ -1374,15 +1528,16 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         } catch { errorMessage = "无法准备剪贴板图片：\(error.localizedDescription)" }
     }
 
-    func startSendingPastedImage(_ image: NSImage) {
-        guard isConnected, !isSending else { return }
+    func startSendingPastedImage(_ image: NSImage, to peerID: String? = nil) {
+        let peerID = peerID ?? connectedPeerID
+        guard isConnected(to: peerID) || canQueueOffline(peerID), !isSending(to: peerID) else { return }
         guard let png = encodedPNG(image) else { errorMessage = "无法读取剪贴板中的图片。"; return }
         do {
             let directory = settingsURL.deletingLastPathComponent().appendingPathComponent("PastedImages", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent("粘贴图片-\(UUID().uuidString).png")
             try png.write(to: url, options: .atomic)
-            startSending([url])
+            startSending([url], to: peerID)
         } catch { errorMessage = "无法准备剪贴板图片：\(error.localizedDescription)" }
     }
 
@@ -1395,12 +1550,27 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         startSending(urls, to: connectedPeerID)
     }
 
-    func startSending(_ urls: [URL], to peerID: String) {
-        guard let connection = channelsByPeer[peerID], let token = peerTokens[peerID] else {
-            errorMessage = "请先连接设备。"
+    /// `existing` delivers outbox messages, which already have their bubbles, instead of adding new ones.
+    func startSending(_ urls: [URL], to peerID: String, existing: [ChatMessage]? = nil) {
+        guard !urls.isEmpty else { return }
+        guard let connection = channelsByPeer[peerID], let token = peerTokens[peerID],
+              existing != nil || !hasOutbox(peerID) else {
+            let name = outboxPeerName(peerID)
+            enqueueOutbox(urls.map { url in
+                let folder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                return ChatMessage(peerID: peerID, peerName: name, direction: .sent,
+                                   kind: !folder && Self.isImage(url) ? .image : .file, fileName: url.lastPathComponent,
+                                   size: folder ? nil : (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init),
+                                   localPath: url.path, status: .queued, outboxSince: Date())
+            })
             return
         }
-        guard sendTasksByPeer[peerID] == nil, !groupFileWorkers.contains(peerID), !urls.isEmpty else { return }
+        guard sendTasksByPeer[peerID] == nil, !groupFileWorkers.contains(peerID) else { return }
+        let isFolder = urls.map { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        if isFolder.contains(true), !connection.supportsResume {
+            errorMessage = "对方版本不支持发送文件夹，请让对方升级后再试，或打包后发送。"
+            return
+        }
         retryURLsByPeer[peerID] = urls
         if connectedPeerID == peerID {
             retryURLs = urls
@@ -1411,13 +1581,13 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         }
         sendingPeers.insert(peerID)
         isSending = !sendingPeers.isEmpty
-        let queued = urls.map { url in
+        let queued = existing ?? zip(urls, isFolder).map { url, folder in
             ChatMessage(peerID: peerID, peerName: connection.peerName, direction: .sent,
-                        kind: Self.isImage(url) ? .image : .file, fileName: url.lastPathComponent,
-                        size: (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init),
+                        kind: !folder && Self.isImage(url) ? .image : .file, fileName: url.lastPathComponent,
+                        size: folder ? nil : (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init),
                         localPath: url.path, status: .queued)
         }
-        messages.append(contentsOf: queued)
+        if existing == nil { messages.append(contentsOf: queued) }
         saveMessages()
         let task = Task { [self] in
             defer {
@@ -1425,6 +1595,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 isSending = !sendingPeers.isEmpty
                 if connectedPeerID == peerID { sendTask = nil }
                 sendTasksByPeer.removeValue(forKey: peerID)
+                flushOutbox(peerID)
             }
             for (index, url) in urls.enumerated() {
                 do {
@@ -1432,13 +1603,25 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     if connectedPeerID == peerID { transferStatus = "正在发送（\(index + 1)/\(urls.count)）：\(url.lastPathComponent)" }
                     let messageID = queued[index].id
                     updateMessage(messageID, status: .sending)
-                    let metadata = try await connection.sendFile(url, transferID: messageID,
-                                                                 kind: queued[index].kind == .image ? .image : .file) { [weak self] count, total in
+                    let progress: @Sendable (UInt64, UInt64) async -> Void = { [weak self] count, total in
                         await self?.sendingProgress(count: count, total: total, index: index,
                                                     messageID: messageID, peerID: peerID, generation: token)
                     }
+                    let sentName: String, sentSize: UInt64
+                    if isFolder[index] {
+                        let result = try await connection.sendFolder(url, transferID: messageID, progress: progress)
+                        (sentName, sentSize) = (result.rootName, result.totalBytes)
+                        if let position = messages.firstIndex(where: { $0.id == messageID && $0.peerID == peerID }) {
+                            messages[position].size = Int64(result.totalBytes)
+                        }
+                    } else {
+                        let metadata = try await connection.sendFile(url, transferID: messageID,
+                                                                     kind: queued[index].kind == .image ? .image : .file,
+                                                                     progress: progress)
+                        (sentName, sentSize) = (metadata.fileName, metadata.size)
+                    }
                     guard activeConnectionTokens.contains(token) else { return }
-                    addRecord(TransferRecord(fileName: metadata.fileName, size: Int64(metadata.size), direction: .sent,
+                    addRecord(TransferRecord(fileName: sentName, size: Int64(sentSize), direction: .sent,
                                              peerName: connection.peerName, savedPath: nil))
                     updateMessage(messageID, status: .delivered)
                     retryURLsByPeer[peerID] = Array(urls.dropFirst(index + 1))
@@ -1449,6 +1632,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     }
                 } catch {
                     guard activeConnectionTokens.contains(token) else { return }
+                    // A declined file is final; it is never retried from the outbox.
+                    if let transferError = error as? TransferSessionError, case .peerRejected = transferError {
+                        updateMessage(queued[index].id, status: .declined, failureReason: "对方拒绝接收该文件。")
+                    }
                     if Task.isCancelled {
                         if connectedPeerID == peerID { transferStatus = "发送已取消" }
                     } else if connectedPeerID == peerID {
@@ -1567,6 +1754,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 pendingGroupLeaveMessagesByGroup.removeValue(forKey: group.id)
                 pendingGroupMembershipChanges.removeValue(forKey: group.id)
             }
+            refreshPendingGroupLeaveGroupIDs()
         }
         directPeerIDs.remove(peerID)
         for groupID in Array(groupPeerIDs.keys) {
@@ -1575,7 +1763,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         }
         receivingPeers.remove(peerID)
         for index in messages.indices where messages[index].peerID == peerID && messages[index].isPending {
-            messages[index].status = .failed
+            messages[index].status = messages[index].interruptedStatus
+            messages[index].progress = 0
             if let failureReason { messages[index].failureReason = failureReason }
         }
         let decisions = fileDecisions.filter { $0.key.peerID == peerID }
@@ -1606,6 +1795,212 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         isReceivingFile = !receivingPeers.isEmpty
         connectedPeerIDs = Set(channelsByPeer.keys)
         connectionState = isConnected ? "已连接：\(connectedPeerName)" : "已断开：\(connectedPeerName)"
+        if isTrustedPeer(peerID), trustedDialStates[trustKey(peerID)]?.suppressed != true {
+            // Waiting first keeps a peer that just closed the connection from being redialed at once.
+            trustedDialStates[trustKey(peerID), default: TrustedDialState()].nextAttempt = Date().addingTimeInterval(Self.trustedDialBackoff[0])
+            connectTrustedPeers()
+        }
+    }
+
+    // MARK: Offline outbox
+
+    static let outboxLimit = 200
+    static let outboxLifetime: TimeInterval = 7 * 24 * 3600
+
+    func hasOutbox(_ peerID: String) -> Bool { messages.contains { $0.peerID == peerID && $0.isOutbox } }
+
+    func outboxCount(_ peerID: String) -> Int { messages.filter { $0.peerID == peerID && $0.isOutbox }.count }
+
+    /// A direct conversation can hold pending messages only when its peer is identified by fingerprint.
+    func canQueueOffline(_ peerID: String) -> Bool { AvatarID.normalizeFingerprint(peerID) != nil }
+
+    private func outboxPeerName(_ peerID: String) -> String {
+        channelsByPeer[peerID]?.peerName ?? chatPeers.first { $0.id == peerID }?.name ?? trustedPeerName(trustKey(peerID))
+    }
+
+    @discardableResult
+    private func enqueueOutbox(_ items: [ChatMessage]) -> Bool {
+        guard let peerID = items.first?.peerID, canQueueOffline(peerID) else { errorMessage = "请先连接设备。"; return false }
+        guard outboxCount(peerID) + items.count <= Self.outboxLimit else {
+            errorMessage = "该会话已有 \(Self.outboxLimit) 条待发送消息，请等对方上线送达后再发送。"
+            return false
+        }
+        messages.append(contentsOf: items)
+        hiddenConversationIDs.remove(peerID)
+        saveMessages()
+        flushOutbox(peerID)
+        return true
+    }
+
+    /// Manual resend of a failed message: delivered now when connected and idle, otherwise queued again.
+    private func requeueOutbox(_ message: ChatMessage) {
+        guard canQueueOffline(message.peerID),
+              let index = messages.firstIndex(where: { $0.id == message.id && $0.direction == .sent }) else {
+            errorMessage = "请先连接这台设备，再重试消息。"
+            return
+        }
+        guard outboxCount(message.peerID) < Self.outboxLimit else {
+            errorMessage = "该会话已有 \(Self.outboxLimit) 条待发送消息，请等对方上线送达后再发送。"
+            return
+        }
+        messages[index].status = .queued
+        messages[index].progress = 0
+        messages[index].failureReason = nil
+        messages[index].outboxSince = Date()
+        saveMessages()
+        flushOutbox(message.peerID)
+    }
+
+    /// Removes a message that has not started delivery.
+    func cancelOutboxMessage(_ message: ChatMessage) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id && $0.direction == .sent && $0.isOutbox }),
+              messages[index].status == .queued else { return }
+        messages.remove(at: index)
+        saveMessages()
+    }
+
+    /// Delivers the oldest pending message for a connected peer; each completion calls this again,
+    /// so messages leave in the order they were written. Only persistent contacts are dialed for it;
+    /// other peers receive pending messages once either side connects.
+    func flushOutbox(_ peerID: String) {
+        expireOutbox()
+        guard hasOutbox(peerID) else { return }
+        guard let connection = channelsByPeer[peerID] else { connectTrustedPeers(); return }
+        guard textTasksByPeer[peerID] == nil, sendTasksByPeer[peerID] == nil, !groupFileWorkers.contains(peerID),
+              let next = messages.filter({ $0.peerID == peerID && $0.isOutbox && $0.status == .queued })
+                .min(by: { $0.date < $1.date }) else { return }
+        if next.kind == .text {
+            transmitText(next)
+            return
+        }
+        var isDirectory: ObjCBool = false
+        guard let path = next.localPath, FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
+            updateMessage(next.id, status: .failed, failureReason: "源文件已不存在，无法发送。")
+            flushOutbox(peerID)
+            return
+        }
+        guard !isDirectory.boolValue || connection.supportsResume else {
+            updateMessage(next.id, status: .failed, failureReason: "对方版本不支持接收文件夹。")
+            flushOutbox(peerID)
+            return
+        }
+        startSending([URL(fileURLWithPath: path)], to: peerID, existing: [next])
+    }
+
+    private var outboxExpiryTimer: Task<Void, Never>?
+
+    /// Checks hourly, so a pending message expires even when no discovery or connection event happens.
+    private func startOutboxExpiryTimer() {
+        outboxExpiryTimer?.cancel()
+        outboxExpiryTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3600))
+                guard !Task.isCancelled else { return }
+                self?.expireOutbox()
+            }
+        }
+    }
+
+    /// Pending messages older than seven days fail and wait for a manual resend.
+    private func expireOutbox(now: Date = Date()) {
+        var changed = false
+        for index in messages.indices where messages[index].isOutbox && messages[index].status == .queued {
+            guard let since = messages[index].outboxSince, now.timeIntervalSince(since) > Self.outboxLifetime else { continue }
+            messages[index].status = .failed
+            messages[index].failureReason = "超过 7 天未送达，请手动重发。"
+            changed = true
+        }
+        if changed { saveMessages() }
+    }
+
+    // MARK: Persistent contacts
+
+    /// Trusted peers are stored as compact uppercase fingerprints; peer IDs elsewhere keep the
+    /// grouped display form, so every lookup goes through this key.
+    private func trustKey(_ peerID: String) -> String { AvatarID.normalizeFingerprint(peerID) ?? peerID }
+
+    func isTrustedPeer(_ peerID: String) -> Bool { settings.trustedPeers.contains(trustKey(peerID)) }
+
+    func setTrustedPeer(_ peerID: String, trusted: Bool) throws {
+        guard let fingerprint = AvatarID.normalizeFingerprint(peerID) else { return }
+        var updated = settings
+        updated.trustedPeers.removeAll { $0 == fingerprint }
+        if trusted { updated.trustedPeers.append(fingerprint) }
+        updated.trustedPeers = DeviceSettings.normalizedTrustedPeers(updated.trustedPeers)
+        try persist(updated, to: settingsURL)
+        settings = updated
+        trustedDialStates[fingerprint] = nil
+        if trusted { connectTrustedPeers() }
+    }
+
+    func trustedPeerName(_ peerID: String) -> String {
+        if let device = nearbyDevice(for: peerID) { return device.displayName }
+        if let peer = chatPeers.first(where: { trustKey($0.id) == peerID }) { return peer.name }
+        for group in groups {
+            if let name = group.members.first(where: { trustKey($0.fingerprint) == peerID })?.displayName { return name }
+        }
+        return String(peerID.prefix(12))
+    }
+
+    /// A user-initiated disconnect also stops automatic redialing of this peer until the user connects again.
+    func disconnectByUser(peerID: String) {
+        if isTrustedPeer(peerID) { trustedDialStates[trustKey(peerID), default: TrustedDialState()].suppressed = true }
+        disconnect(peerID: peerID)
+    }
+
+    private func noteTrustedDialFailure(_ peerID: String, rejected: Bool) {
+        var state = trustedDialStates[peerID] ?? TrustedDialState()
+        if rejected {
+            state.suppressed = true
+        } else {
+            state.failures += 1
+            state.nextAttempt = Date().addingTimeInterval(Self.trustedDialBackoff[min(state.failures, Self.trustedDialBackoff.count) - 1])
+        }
+        trustedDialStates[peerID] = state
+        connectTrustedPeers()
+    }
+
+    /// Dials discovered persistent contacts that are not connected. The peer with the larger
+    /// fingerprint waits 10 seconds after discovery so both sides rarely dial at once.
+    func connectTrustedPeers(now: Date = Date()) {
+        trustedDialTimer?.cancel()
+        trustedDialTimer = nil
+        expireOutbox(now: now)
+        guard settings.firstRunComplete, isIdentityReady, !settings.trustedPeers.isEmpty else { return }
+        let ownID = AvatarID.normalizeFingerprint(identityFingerprint) ?? ""
+        var nextWake: Date?
+        let connected = Set(channelsByPeer.keys.map(trustKey))
+        let awaitingApproval = Set(approvalPeerFingerprints.values.map(trustKey))
+        for peerID in settings.trustedPeers where !connected.contains(peerID) {
+            guard let device = nearbyDevice(for: peerID) else {
+                trustedDialStates[peerID]?.firstSeen = nil
+                continue
+            }
+            var state = trustedDialStates[peerID] ?? TrustedDialState()
+            if state.firstSeen == nil { state.firstSeen = now }
+            trustedDialStates[peerID] = state
+            guard !state.suppressed, !isConnectionPending(for: peerID),
+                  !awaitingApproval.contains(peerID) else { continue }
+            var due = state.nextAttempt
+            if ownID > peerID, let seen = state.firstSeen { due = max(due, seen.addingTimeInterval(10)) }
+            if due > now {
+                nextWake = min(nextWake ?? due, due)
+                continue
+            }
+            guard directPeerIDs.count + directConnectionTokens.count < 20 else { break }
+            isAutoDialing = true
+            requestConnection(to: device)
+            isAutoDialing = false
+            if let token = serviceNameByToken.first(where: { $0.value == device.serviceName })?.key {
+                trustedDialTokens[token] = peerID
+            }
+        }
+        guard let nextWake else { return }
+        trustedDialTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(max(1, nextWake.timeIntervalSinceNow)))
+            guard !Task.isCancelled else { return }
+            self?.connectTrustedPeers()
+        }
     }
 
     private func cancelConnectionAttempts() {
@@ -1619,7 +2014,9 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         for id in approvalOrder { approvalContinuations.removeValue(forKey: id)?.resume(returning: false) }
         approvalOrder.removeAll()
         approvalPeerNames.removeAll()
+        approvalPeerFingerprints.removeAll()
         pendingConnectionPeerName = nil
+        pendingConnectionPeerFingerprint = nil
     }
 
     private func disconnectAll(failureReason: String? = nil, preservePendingRequests: Bool = false) {
@@ -1645,7 +2042,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         transportByToken.values.forEach { $0.close() }
         transportByToken.removeAll()
         for index in messages.indices where messages[index].isPending {
-            messages[index].status = .failed
+            messages[index].status = messages[index].interruptedStatus
+            messages[index].progress = 0
             if let failureReason { messages[index].failureReason = failureReason }
         }
         for (key, continuation) in fileDecisions {
@@ -1672,6 +2070,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     }
 
     func shutdown() {
+        outboxExpiryTimer?.cancel()
+        outboxExpiryTimer = nil
         started = false
         identityPreparationID = UUID()
         identityPreparationTask?.cancel()
@@ -1763,6 +2163,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         var remainingHidden = hiddenConversationIDs
         remainingHidden.remove(id)
         try persistConversationState(messages: remainingMessages, hidden: remainingHidden)
+        markConversationRead(id)
     }
 
     var hiddenConversations: [ChatPeer] {
@@ -1811,7 +2212,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         let preparation = PendingGroupPreparation(group: group, invitationTargets: invitationTargets,
             prepareTargets: prepareTargets,
             durableAbortTargetFingerprints: prepareTargets.compactMap {
-                channelsByPeer[$0.peerID]?.protocolVersion == 5 ? $0.peerID : nil
+                (channelsByPeer[$0.peerID]?.protocolVersion ?? 0) >= 5 ? $0.peerID : nil
             })
         pendingGroupSetups[group.id] = group
         pendingGroupPreparations[group.id] = preparation
@@ -1932,6 +2333,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 errorMessage = "保存退出申请失败：\(error.localizedDescription)"
                 return
             }
+            refreshPendingGroupLeaveGroupIDs()
             sendGroupLeaveRequest(message)
         } catch { errorMessage = error.localizedDescription }
     }
@@ -2245,7 +2647,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         let preparation = PendingGroupPreparation(group: proposed, invitationTargets: invitationTargets,
             prepareTargets: prepareTargets,
             durableAbortTargetFingerprints: prepareTargets.compactMap {
-                channelsByPeer[$0.peerID]?.protocolVersion == 5 ? $0.peerID : nil
+                (channelsByPeer[$0.peerID]?.protocolVersion ?? 0) >= 5 ? $0.peerID : nil
             })
         pendingGroupSetups[groupID] = proposed
         pendingGroupPreparations[groupID] = preparation
@@ -2477,7 +2879,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         }
         let durablePeers = Set(preparation.durableAbortTargetFingerprints ?? [])
         return preparation.prepareTargets.allSatisfy { target in
-            if let channel = channelsByPeer[target.peerID] { return channel.protocolVersion == 5 }
+            if let channel = channelsByPeer[target.peerID] { return channel.protocolVersion >= 5 }
             return durablePeers.contains(target.peerID)
         }
     }
@@ -2494,7 +2896,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         guard !targets.isEmpty,
               targets.allSatisfy({ target in
                   let supportsAbort: Bool
-                  if let channel = channelsByPeer[target.peerID] { supportsAbort = channel.protocolVersion == 5 }
+                  if let channel = channelsByPeer[target.peerID] { supportsAbort = channel.protocolVersion >= 5 }
                   else { supportsAbort = durablePeers.contains(target.peerID) }
                   return supportsAbort && target.message.targetFingerprint == target.peerID &&
                       target.message.ownerFingerprint == identity.fingerprint
@@ -2532,7 +2934,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         defer { retryingGroupAborts.remove(groupID) }
         do {
             for target in pending.targets where !pending.acknowledgedPeers.contains(target.peerID) {
-                guard channelsByPeer[target.peerID]?.protocolVersion == 5 else { return false }
+                guard (channelsByPeer[target.peerID]?.protocolVersion ?? 0) >= 5 else { return false }
                 let reply = try await sendGroupControlAndWait(target.message, to: target.peerID,
                                                                responseKind: .membershipAbortReply)
                 guard reply.accepted == true,
@@ -2752,6 +3154,9 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                                                   $0.senderFingerprint == envelope.senderFingerprint }) {
                 groupMessages.append(envelope)
                 try persistGroupState()
+                let sender = channelsByPeer[peerID]?.peerName ?? peer
+                noteIncoming(conversation: Self.groupConversationKey(group.id), title: "\(group.name) · \(sender)",
+                             body: envelope.text ?? "新消息", notify: true)
             }
             let ack = try GroupTextAck(groupID: envelope.groupID, messageID: envelope.id,
                                        epoch: envelope.memberRevision, accepted: true)
@@ -2769,7 +3174,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private func receiveGroupControl(_ message: GroupControlMessage, peer: String, peerID: String) async throws {
         guard let local = preparedIdentity else { throw GroupConversationError.invalidControlMessage }
         if message.kind == .membershipAbort || message.kind == .membershipAbortReply {
-            guard channelsByPeer[peerID]?.protocolVersion == 5 else {
+            guard (channelsByPeer[peerID]?.protocolVersion ?? 0) >= 5 else {
                 throw GroupConversationError.invalidControlMessage
             }
         }
@@ -2836,7 +3241,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             guard let slot = pendingGroupControlWaiters[key] else { throw GroupConversationError.invalidControlMessage }
             slot.resolve(.success(message))
         case .membershipAbortReply:
-            guard channelsByPeer[peerID]?.protocolVersion == 5,
+            guard (channelsByPeer[peerID]?.protocolVersion ?? 0) >= 5,
                   message.ownerFingerprint == local.fingerprint, message.targetFingerprint == peerID else {
                 throw GroupConversationError.invalidControlMessage
             }
@@ -2944,6 +3349,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 }
                 throw error
             }
+            refreshPendingGroupLeaveGroupIDs()
             let hasPendingLeaveRequest = pendingLeaveRequestsByGroup[message.groupID]?.isEmpty == false
             if !hasPendingGroupLeaveExchange(with: peerID) { clearPendingGroupLeaveReconnect(peerID: peerID) }
             if message.accepted != true { errorMessage = "群主暂未批准退出申请。" }
@@ -3118,7 +3524,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     private func receiveDurableMembershipAbort(_ message: GroupControlMessage, peerID: String,
                                                local: DeviceIdentity) async throws {
-        guard channelsByPeer[peerID]?.protocolVersion == 5,
+        guard (channelsByPeer[peerID]?.protocolVersion ?? 0) >= 5,
               message.ownerFingerprint == peerID, message.targetFingerprint == local.fingerprint else {
             throw GroupConversationError.invalidControlMessage
         }
@@ -3213,9 +3619,14 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     @discardableResult
     func sendText(_ text: String, to peerID: String) -> Bool {
-        guard let connection = channelsByPeer[peerID], textTasksByPeer[peerID] == nil else { return false }
         do { _ = try ChatText(text: text) }
         catch { errorMessage = error.localizedDescription; return false }
+        // Earlier pending messages go first, so a new message joins the outbox behind them.
+        guard let connection = channelsByPeer[peerID], !hasOutbox(peerID) else {
+            return enqueueOutbox([ChatMessage(peerID: peerID, peerName: outboxPeerName(peerID), direction: .sent,
+                                              kind: .text, text: text, status: .queued, outboxSince: Date())])
+        }
+        guard textTasksByPeer[peerID] == nil else { return false }
         let message = ChatMessage(peerID: peerID, peerName: connection.peerName, direction: .sent,
                                   kind: .text, text: text, status: .sending)
         messages.append(message)
@@ -3236,6 +3647,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 sendingTextPeers.remove(peerID)
                 if connectedPeerID == peerID { isSendingText = false; textTask = nil }
                 textTasksByPeer.removeValue(forKey: peerID)
+                flushOutbox(peerID)
             }
             do {
                 _ = try await connection.sendText(message.text ?? "", id: message.id)
@@ -3244,7 +3656,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 noteFirstSuccessfulTransfer(title: "消息已送达", body: "\(connection.peerName) 已收到你的消息。")
             } catch {
                 guard activeConnectionTokens.contains(token) else { return }
-                updateMessage(message.id, status: .failed, failureReason: error.localizedDescription)
+                updateMessage(message.id, status: message.interruptedStatus, failureReason: error.localizedDescription)
                 disconnect(peerID: peerID, failureReason: error.localizedDescription,
                            preservePendingRequests: true)
                 schedulePendingGroupLeaveReconnect(peerID: peerID)
@@ -3268,10 +3680,14 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         var hidden = hiddenConversationIDs
         hidden.remove(peerID)
         try persistConversationState(messages: updated, hidden: hidden)
+        noteIncoming(conversation: peerID, title: peer, body: value.preview, notify: true)
     }
 
     func retryMessage(_ message: ChatMessage) {
-        guard channelsByPeer[message.peerID] != nil else { errorMessage = "请先连接这台设备，再重试消息。"; return }
+        guard channelsByPeer[message.peerID] != nil, !hasOutbox(message.peerID) else {
+            requeueOutbox(message)
+            return
+        }
         if message.kind == .text { transmitText(message) }
         else if let path = message.localPath { startSending([URL(fileURLWithPath: path)], to: message.peerID) }
     }
@@ -3337,6 +3753,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     pendingGroupLeaveMessagesByGroup[message.groupID, default: [:]][message.eventID] = message
                     pendingLeaveRequestsByGroup[message.groupID, default: []].insert(message.eventID)
                 }
+                refreshPendingGroupLeaveGroupIDs()
                 pendingGroupAborts = Dictionary(uniqueKeysWithValues: archive.pendingGroupAborts.map { ($0.group.id, $0) })
                 groupAbortTombstones = Dictionary(uniqueKeysWithValues: archive.groupAbortTombstones.map { ($0.abort.eventID, $0) })
                 for abort in archive.pendingGroupAborts {
@@ -3361,9 +3778,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 }
                 messages = archive.messages.map { value in
                     var message = value
-                    if message.isPending { message.status = .failed }
+                    if message.isPending { message.status = message.interruptedStatus; message.progress = 0 }
                     return message
                 }.sorted { $0.date < $1.date }
+                expireOutbox()
             } catch {
                 conversationArchiveLoadFailed = true
                 errorMessage = "会话记录无法读取，原文件已保留：\(error.localizedDescription)"
@@ -3452,4 +3870,11 @@ enum ConversationManagementError: LocalizedError {
         case .archiveUnavailable: "现有会话记录无法读取，因此没有覆盖原文件。请先备份并修复记录文件。"
         }
     }
+}
+
+
+extension FileMetadata {
+    /// A folder transfer is shown as one message named after its root folder.
+    var displayName: String { folder?.rootName ?? fileName }
+    var displaySize: UInt64 { folder?.totalBytes ?? size }
 }

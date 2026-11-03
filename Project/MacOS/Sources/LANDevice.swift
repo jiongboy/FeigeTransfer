@@ -6,5 +6,7 @@ struct LANDevice: Identifiable, Hashable, Sendable {
     let displayName: String
     let endpoint: NWEndpoint
     var protocolVersions: Set<UInt16> = [3]
+    var fingerprintHint: String? = nil
+    var avatarId: String? = nil
     var addressDescription: String { endpoint.debugDescription }
 }

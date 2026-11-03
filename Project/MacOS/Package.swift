@@ -14,6 +14,7 @@ let package = Package(
             name: "FeigeMac",
             dependencies: ["FeigeIdentity"],
             path: "Sources",
+            resources: [.process("Resources")],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Network"),

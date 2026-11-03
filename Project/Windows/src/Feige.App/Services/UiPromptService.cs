@@ -4,6 +4,8 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace Feige.App.Services;
 
+public enum ConnectionConsent { Rejected, Accepted, AcceptedAndTrusted }
+
 /// <summary>Serializes native dialogs and closes an outstanding connection prompt on cancellation.</summary>
 public sealed class UiPromptService
 {
@@ -13,7 +15,11 @@ public sealed class UiPromptService
     private readonly SemaphoreSlim _dialogs = new(1);
     public void Initialize(DispatcherQueue dispatcher, Func<XamlRoot?> rootProvider) { _dispatcher = dispatcher; _root = rootProvider; }
 
-    public Task<bool> ConfirmConnectionAsync(string name, string folder, CancellationToken ct)
+    public async Task<bool> ConfirmConnectionAsync(string name, string folder, CancellationToken ct)
+        => await ConfirmConnectionAsync(name, folder, offerTrust: false, ct) != ConnectionConsent.Rejected;
+
+    /// <summary>With <paramref name="offerTrust"/>, a secondary button also makes the peer a persistent contact.</summary>
+    public Task<ConnectionConsent> ConfirmConnectionAsync(string name, string folder, bool offerTrust, CancellationToken ct)
         => OnUiAsync(async () =>
         {
             App.ShowMainWindow();
@@ -21,8 +27,15 @@ public sealed class UiPromptService
             content.Children.Add(new TextBlock { Text = $"“{name}”请求与你连接。", TextWrapping = TextWrapping.Wrap });
             content.Children.Add(new TextBlock { Text = "同意后，本次连接内可双向发送文字、图片和文件。断开后再次连接需要重新同意。", TextWrapping = TextWrapping.Wrap });
             content.Children.Add(new TextBlock { Text = "接收位置：" + folder, TextWrapping = TextWrapping.Wrap });
-            return await ShowAsync(new ContentDialog { Title = "连接请求", Content = content,
-                PrimaryButtonText = "同意连接", CloseButtonText = "拒绝", DefaultButton = ContentDialogButton.Close }, ct) == ContentDialogResult.Primary;
+            var dialog = new ContentDialog { Title = "连接请求", Content = content,
+                PrimaryButtonText = "同意连接", CloseButtonText = "拒绝", DefaultButton = ContentDialogButton.Close };
+            if (offerTrust) dialog.SecondaryButtonText = "同意并以后自动连接";
+            return await ShowAsync(dialog, ct) switch
+            {
+                ContentDialogResult.Primary => ConnectionConsent.Accepted,
+                ContentDialogResult.Secondary => ConnectionConsent.AcceptedAndTrusted,
+                _ => ConnectionConsent.Rejected,
+            };
         });
 
     public async Task<ContentDialogResult> ShowAsync(ContentDialog dialog, CancellationToken ct = default)

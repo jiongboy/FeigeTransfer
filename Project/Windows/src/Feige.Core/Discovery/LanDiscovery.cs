@@ -23,12 +23,12 @@ public sealed class LanDiscovery : IAsyncDisposable
     /// Transport to use; defaults to a real <see cref="UdpMdnsTransport"/>. Tests pass an in-memory one.
     /// </param>
     /// <param name="addresses">Addresses to advertise; defaults to the machine's unicast addresses.</param>
-    public LanDiscovery(LocalDevice device, int port, IMdnsTransport? transport = null, IReadOnlyList<IPAddress>? addresses = null, int version = 1)
+    public LanDiscovery(LocalDevice device, int port, IMdnsTransport? transport = null, IReadOnlyList<IPAddress>? addresses = null, int version = 1, string? avatarId = null)
     {
         ArgumentNullException.ThrowIfNull(device);
 
         _transport = transport ?? new UdpMdnsTransport();
-        Advertiser = new MdnsAdvertiser(_transport, device, port, addresses, version);
+        Advertiser = new MdnsAdvertiser(_transport, device, port, addresses, version, avatarId);
         V3Advertiser = version == 3 ? Advertiser : null;
         V4Advertiser = version == 4 ? Advertiser : null;
         Advertisers = [Advertiser];
@@ -42,12 +42,12 @@ public sealed class LanDiscovery : IAsyncDisposable
 
     /// <summary>Creates simultaneous v3 and v4 advertisements over one shared mDNS transport.</summary>
     public LanDiscovery(LocalDevice device, int v3Port, int v4Port, IMdnsTransport? transport = null,
-                        IReadOnlyList<IPAddress>? addresses = null)
+                        IReadOnlyList<IPAddress>? addresses = null, string? avatarId = null)
     {
         ArgumentNullException.ThrowIfNull(device);
         _transport = transport ?? new UdpMdnsTransport();
-        V3Advertiser = new MdnsAdvertiser(_transport, device, v3Port, addresses, version: 3);
-        V4Advertiser = new MdnsAdvertiser(_transport, device, v4Port, addresses, version: 4);
+        V3Advertiser = new MdnsAdvertiser(_transport, device, v3Port, addresses, version: 3, avatarId);
+        V4Advertiser = new MdnsAdvertiser(_transport, device, v4Port, addresses, version: 4, avatarId);
         Advertiser = V3Advertiser; // Compatibility alias for callers that previously read the single advertiser.
         Advertisers = [V3Advertiser, V4Advertiser];
         Browser = new PeerBrowser(_transport)

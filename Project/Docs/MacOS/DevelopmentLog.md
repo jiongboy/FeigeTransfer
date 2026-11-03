@@ -4,6 +4,23 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-03：协作增强五项（跨网段、未读、常驻联系人、v6 文件夹与续传、离线待发）
+
+- **跨网段**：`Identity/Sources/UnicastProbe.swift` 实现单播探测报文与私网来源过滤；设置中维护探测目标。
+- **未读与通知**：`TransferModel+Unread.swift` 本机计数，当前激活会话不计入；Dock 角标与系统通知。
+- **常驻联系人**：`DeviceSettings.trustedPeers` 保存完整指纹，自动同意连接（不跳过文件确认）；`connectTrustedPeers` 退避 30 秒/1/5/30 分钟，指纹较大的一方发现后多等 10 秒；拒绝或手动断开后暂停，手动连接恢复。
+- **v6**：版本门限放宽到 6，发现 `caps=3,4,5,6`；`ResumableTransfer.swift` 提供续传暂存（`.feige-resume-<key>.part`）、文件夹状态、枚举（跳过符号链接与 `.DS_Store`）和 7 天清理；`FileConnection.sendFolder` 整个文件夹只确认一次、不合并、不覆盖。修复枚举遇到符号链接时调用 `skipDescendants()` 漏掉下一个目录的问题。
+- **离线待发**：`ChatMessage.outboxSince` 标记待发；未连接或已有待发时 `sendText`/`startSending` 入队，连接安装及每条投递结束后 `flushOutbox` 按时间逐条发送，文件发送前检查源文件，对方拒绝记为“已拒绝接收”不再重试。中断、断线、重启回到待发。每会话 200 条上限，可取消，超过 7 天转失败（启动、发现事件和每小时检查）。只为常驻联系人自动拨号，其他设备需任一方手动连接后投递。
+- **验证**：`swift test` 全量通过：应用 95 项（5 项依赖局域网或 Windows 环境跳过）、核心 74 项；新增 `ResumableTransferTests` 8 项、`OutboxTests` 2 项（含回环连接下的顺序投递、原 ID 去重、源文件缺失、拒绝不重试）、v6 共享握手向量。最后一轮调整后重跑 `OutboxTests`、`TrustedPeerTests` 通过。
+- **未完成**：未做界面实测和与 Windows 的真实局域网互通（跨网段、续传、文件夹、离线投递）；未打包。
+
+## 2026-11-02：新手引导、群成员面板与预置头像
+
+- **头像**：`AvatarCatalog.swift` 读取 10 个内置头像（打包时从 `Sources/Resources/Avatars` 复制到 `Contents/Resources/Avatars`，与 `Project/Ui/Avatars` 内容一致），首次引导和设置可选择或跳过；`LANService` 在 TXT 中发布可选 `avatar=`，对端头像仅在完整指纹与已认证连接匹配后保存。
+- **群成员面板**：`GroupMembersInspector.swift` 在当前群聊内显示成员数、头像、角色和在线状态，可搜索；移除确认写明目标成员名。
+- **空状态**：无设备时显示“尚未找到设备”，提供“重新搜索”和“连接排查”；身份未就绪时只显示状态。
+- **验证**：`swift test` 148 项通过（5 项跳过）。界面未人工验收。
+
 ## 2026-11-02：网络切换后清理失效会话通道
 
 - **行为**：`NWPathMonitor` 跟踪网络可用状态和路径更新。网络中断或在线路径更新时关闭现有聊天通道（即使接口名称不变），将未完成消息标记为失败；会话历史和草稿继续保留。网络恢复或路径更新后等待 750 ms 再刷新设备发现。

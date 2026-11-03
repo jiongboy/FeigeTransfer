@@ -4,8 +4,11 @@ import SwiftUI
 
 struct ChatMessageView: View {
     let message: ChatMessage
+    let avatarId: String?
     let canRetry: Bool
     var retry: () -> Void
+    /// Removes an outbox message that has not started delivery.
+    var cancel: () -> Void = {}
     /// Receiver actions for an incoming file that is waiting for confirmation.
     var accept: () -> Void = {}
     var decline: () -> Void = {}
@@ -18,8 +21,12 @@ struct ChatMessageView: View {
         HStack(alignment: .top, spacing: 0) {
             if outgoing { Spacer(minLength: 80) }
             VStack(alignment: outgoing ? .trailing : .leading, spacing: 6) {
-                Text("\(outgoing ? "我" : message.peerName) · \(message.date.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    if !outgoing { AvatarView(avatarID: avatarId, size: 20) }
+                    Text("\(outgoing ? "我" : message.peerName) · \(message.date.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if outgoing { AvatarView(avatarID: avatarId, size: 20) }
+                }
                 if message.kind == .text { textBubble }
                 else { attachment }
                 HStack(spacing: 8) {
@@ -33,6 +40,9 @@ struct ChatMessageView: View {
                         if outgoing { Button("重试", action: retry).buttonStyle(.borderless).disabled(!canRetry) }
                     } else {
                         Text(statusLabel).foregroundStyle(.secondary)
+                        if message.isOutbox && message.status == .queued {
+                            Button("取消发送", action: cancel).buttonStyle(.borderless)
+                        }
                     }
                 }.font(.caption2)
             }.frame(maxWidth: 420, alignment: outgoing ? .trailing : .leading)
@@ -92,7 +102,7 @@ struct ChatMessageView: View {
                 }.controlSize(.small)
             } else if message.isPending {
                 ProgressView(value: message.progress)
-                Text(message.status == .queued ? "等待发送" : "\(outgoing ? "发送中" : "接收中") · \(Int(message.progress * 100))%")
+                Text(message.status == .queued ? (message.isOutbox ? "待发送" : "等待发送") : "\(outgoing ? "发送中" : "接收中") · \(Int(message.progress * 100))%")
                     .font(.caption2).foregroundStyle(.secondary)
             } else if let path = message.localPath, message.status != .failed {
                 Divider()
@@ -110,7 +120,7 @@ struct ChatMessageView: View {
 
     private var statusLabel: String {
         switch message.status {
-        case .queued: "等待发送"
+        case .queued: message.isOutbox ? "待发送 · 对方连接后自动发送" : "等待发送"
         case .awaitingApproval: "等待你确认接收"
         case .sending: message.direction == .sent ? "发送中…" : "接收中…"
         case .delivered: "已送达"

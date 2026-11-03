@@ -27,14 +27,16 @@ public sealed class V4WireTests
         Assert.Equal(Hex(root.GetProperty("responderToInitiatorKeyHex").GetString()!), r2i);
     }
 
-    [Fact]
-    public void SharedV5HandshakeVector_MatchesTranscriptDigestAndDirectionalKeys()
+    [Theory]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void SharedV5AndV6HandshakeVectors_MatchTranscriptDigestAndDirectionalKeys(ushort version)
     {
-        string path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "v5-handshake.json");
+        string path = Path.Combine(AppContext.BaseDirectory, "Fixtures", $"v{version}-handshake.json");
         using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path));
         var root = document.RootElement;
-        Assert.Equal("feige-v5-handshake-primitives", root.GetProperty("format").GetString());
-        Assert.Equal((ushort)5, root.GetProperty("version").GetUInt16());
+        Assert.Equal($"feige-v{version}-handshake-primitives", root.GetProperty("format").GetString());
+        Assert.Equal(version, root.GetProperty("version").GetUInt16());
         V4Offer initiator = ReadOffer(root.GetProperty("initiatorOffer"));
         V4Offer responder = ReadOffer(root.GetProperty("responderOffer"));
         byte[] transcript = V4Wire.Transcript(initiator, responder);

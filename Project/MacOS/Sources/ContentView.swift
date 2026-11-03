@@ -9,6 +9,8 @@ struct ContentView: View {
     @State private var selectedPeerID: String?
     @State private var selectedGroupID: UUID?
     @State private var selectedDeviceID: String?
+    @State private var showGroupMembers = false
+    @State private var groupMemberSearch = ""
     @State private var showNewGroup = false
     @State private var showManualConnection = false
     @State private var pendingDevice: LANDevice?
@@ -44,7 +46,12 @@ struct ContentView: View {
     private var viewingConnected: Bool { selectedGroupID == nil && model.isConnected(to: currentPeerID) }
     private var composerEnabled: Bool {
         if let currentGroup { return model.canSendGroupText(currentGroup.id) }
-        return viewingConnected
+        // A known direct conversation accepts messages offline; they wait in the outbox.
+        return viewingConnected || (selectedGroupID == nil && model.canQueueOffline(currentPeerID))
+    }
+    private var visibleConversationKey: String? {
+        if let selectedGroupID { return TransferModel.groupConversationKey(selectedGroupID) }
+        return currentPeerID.isEmpty ? nil : currentPeerID
     }
     private var draftKey: String { selectedGroupID?.uuidString ?? (currentPeerID.isEmpty ? (selectedDeviceID ?? "") : currentPeerID) }
     private var draft: Binding<String> {
@@ -104,7 +111,14 @@ struct ContentView: View {
                 GuidancePanel()
                 conversationHeader
                 Divider()
-                timeline
+                HStack(spacing: 0) {
+                    timeline
+                    if let group = currentGroup, showGroupMembers {
+                        Divider()
+                        GroupMembersInspector(group: group, searchText: $groupMemberSearch, isPresented: $showGroupMembers)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Divider()
                 composer
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -201,8 +215,18 @@ struct ContentView: View {
         .onChange(of: model.connectedPeerID) { id in
             if !id.isEmpty { selectedPeerID = id; selectedGroupID = nil; selectedDeviceID = nil }
         }
+        .onChange(of: selectedGroupID) { id in
+            groupMemberSearch = ""
+            if id == nil { showGroupMembers = false }
+        }
         .onChange(of: currentPeerID) { id in
             if !id.isEmpty { model.selectConversation(id) }
+        }
+        .onChange(of: visibleConversationKey) { model.setVisibleConversation($0) }
+        .onAppear { model.setVisibleConversation(visibleConversationKey) }
+        .onDisappear { model.setVisibleConversation(nil) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.applicationDidBecomeActive()
         }
         .onReceive(NotificationCenter.default.publisher(for: .feigeOpenSettings)) { _ in openWindow(id: "settings") }
         .onReceive(NotificationCenter.default.publisher(for: .feigeOpenUpdates)) { _ in openWindow(id: "settings") }
@@ -330,7 +354,8 @@ struct ContentView: View {
                         } label: {
                             peerRow(name: group.name,
                                     detail: "\(group.members.count) 位成员 · 修订 \(group.revision)",
-                                    active: selectedGroupID == group.id, connected: false)
+                                    active: selectedGroupID == group.id, connected: false, symbol: "person.3.fill",
+                                    unread: model.unreadCount(for: TransferModel.groupConversationKey(group.id)))
                         }
                         .buttonStyle(.plain)
                     }
@@ -348,14 +373,16 @@ struct ContentView: View {
                     ForEach(model.chatPeers) { peer in
                         Button { selectedPeerID = peer.id; selectedGroupID = nil; selectedDeviceID = nil } label: {
                             peerRow(name: peer.name, detail: peer.preview, active: peer.id == currentPeerID,
-                                    connected: model.isConnected(to: peer.id))
+                                    connected: model.isConnected(to: peer.id), avatarId: model.avatarId(for: peer.id),
+                                    unread: model.unreadCount(for: peer.id))
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
                             Button("打开会话") { openConversation(peer.id) }
                             if model.isConnected(to: peer.id) {
-                                Button("断开连接") { model.disconnect(peerID: peer.id) }
+                                Button("断开连接") { model.disconnectByUser(peerID: peer.id) }
                             }
+                            trustedPeerButton(peer.id)
                             Divider()
                             Button("隐藏会话") { model.hideConversation(peer.id) }
                             Button("删除记录…", role: .destructive) { pendingDeletePeerID = peer.id }
@@ -366,17 +393,30 @@ struct ContentView: View {
                         Text("附近的设备").font(.caption).foregroundStyle(.secondary).padding(.leading, 12).padding(.top, 12)
                         ForEach(undisplayedDevices) { device in
                             Button { selectedDeviceID = device.id; selectedGroupID = nil; selectedPeerID = nil } label: {
-                                peerRow(name: device.displayName, detail: "在线 · 尚未连接", active: selectedDeviceID == device.id, connected: false)
+                                peerRow(name: device.displayName, detail: "在线 · 尚未连接", active: selectedDeviceID == device.id,
+                                        connected: false, avatarId: model.avatarId(for: device.fingerprintHint ?? "", hint: device.avatarId))
                             }.buttonStyle(.plain)
                         }
                     }
                     if model.chatPeers.isEmpty && model.nearbyDevices.isEmpty {
                         VStack(alignment: .leading, spacing: 5) {
+                            if model.isIdentityReady {
+                                Text(model.isRefreshingPeers ? "正在搜索附近设备…" : "尚未找到设备")
+                                    .font(.system(size: 12, weight: .medium))
+                                Text("请确认另一台设备已打开飞鸽快传，并处于可互通的网络。")
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
                             Text(model.discoveryState).font(.caption).foregroundStyle(model.peerRefreshFailed ? .red : .secondary)
                             if let refreshed = model.lastPeerRefreshAt {
                                 Text("上次刷新：\(refreshed.formatted(date: .omitted, time: .shortened))")
                                     .font(.caption2).foregroundStyle(.tertiary)
                             }
+                            HStack(spacing: 8) {
+                                Button("重新搜索") { model.refreshPeers() }
+                                    .disabled(model.isPreparingIdentity || model.isRefreshingPeers)
+                                Button("连接排查") { showConnectionHelp = true }
+                            }
+                            .controlSize(.small).padding(.top, 3)
                         }.padding(12)
                     }
                 }
@@ -389,7 +429,8 @@ struct ContentView: View {
                 Button { showUsageHelp = true } label: { Label("使用帮助", systemImage: "questionmark.circle") }
                 Divider()
                 HStack(spacing: 8) {
-                    Image(systemName: "laptopcomputer").foregroundStyle(Color.accentColor)
+                    AvatarView(avatarID: model.settings.avatarId, size: 30)
+                        .accessibilityLabel("本机头像")
                     VStack(alignment: .leading, spacing: 3) {
                         Text(model.settings.deviceName).font(.system(size: 12, weight: .medium)).lineLimit(1)
                         Text(model.listenerPort == nil ? model.discoveryState : "局域网内可被发现").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
@@ -407,15 +448,28 @@ struct ContentView: View {
         .background(colorScheme == .light ? Color.white : Color(nsColor: .underPageBackgroundColor))
     }
 
-    private func peerRow(name: String, detail: String, active: Bool, connected: Bool) -> some View {
+    private func peerRow(name: String, detail: String, active: Bool, connected: Bool,
+                         avatarId: String? = nil, symbol: String = "desktopcomputer", unread: Int = 0) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: "desktopcomputer").foregroundStyle(Color.accentColor)
-                .frame(width: 37, height: 39).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            if let avatarId {
+                AvatarView(avatarID: avatarId, size: 37)
+                    .frame(width: 37, height: 39)
+            } else {
+                Image(systemName: symbol).foregroundStyle(Color.accentColor)
+                    .frame(width: 37, height: 39).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            }
             VStack(alignment: .leading, spacing: 5) {
                 Text(name).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
+            if unread > 0 {
+                Text(unread > 99 ? "99+" : "\(unread)")
+                    .font(.caption2.weight(.semibold)).monospacedDigit().foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.red, in: Capsule())
+                    .accessibilityLabel("\(unread) 条未读")
+            }
             if connected { Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("已连接") }
         }
         .padding(11).frame(maxWidth: .infinity, alignment: .leading)
@@ -490,70 +544,35 @@ struct ContentView: View {
 
     private var conversationHeader: some View {
         HStack(spacing: 12) {
+            if currentGroup != nil {
+                Image(systemName: "person.3.fill").foregroundStyle(Color.accentColor)
+                    .frame(width: 42, height: 42).background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
+            } else if let currentPeer {
+                AvatarView(avatarID: model.avatarId(for: currentPeer.id), size: 42)
+            } else if let currentDevice {
+                AvatarView(avatarID: model.avatarId(for: currentDevice.fingerprintHint ?? "", hint: currentDevice.avatarId), size: 42)
+            } else {
+                AvatarView(avatarID: model.settings.avatarId, size: 42)
+            }
             VStack(alignment: .leading, spacing: 5) {
                 Text(currentName).font(.system(size: 17, weight: .semibold))
-                Text(currentGroup.map { "群聊 · \($0.members.count) 位成员 · owner 提交成员版本" }
+                Text(currentGroup.map { "群聊 · \($0.members.count) 位成员 · 成员变更需成员确认" }
                      ?? (viewingConnected ? "已连接 · 可以聊天、互传图片与文件" : currentConnectionPending ? model.connectionState : "对方同意连接后，即可聊天和传输"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             if let group = currentGroup {
-                Menu {
-                    let isOwner = group.ownerFingerprint == model.identityFingerprint
-                    ForEach(group.members.filter { $0.fingerprint != model.identityFingerprint }) { member in
-                        let name = member.displayName ?? String(member.fingerprint.suffix(8))
-                        if model.isConnected(to: member.fingerprint) {
-                            Button(action: { model.disconnect(peerID: member.fingerprint) }) {
-                                Text(verbatim: "\(name) · 断开连接")
-                            }
-                        } else {
-                            Button(action: { model.reconnectGroupMember(group.id, fingerprint: member.fingerprint) }) {
-                                Text(verbatim: "\(name) · 重新连接")
-                            }
-                            .disabled(!model.canReconnectGroupMember(group.id, fingerprint: member.fingerprint))
-                        }
-                        if isOwner {
-                            Button(role: .destructive) {
-                                Task {
-                                    do { try await model.removeGroupMember(member.fingerprint, from: group.id) }
-                                    catch { model.errorMessage = error.localizedDescription }
-                                }
-                            } label: { Text(verbatim: "\(name) · 移出群聊") }
-                        }
-                    }
-                    if isOwner {
-                        Divider()
-                        Menu("添加已连接成员") {
-                            ForEach(model.groupEligiblePeers.filter { peer in
-                                !group.members.contains(where: { $0.fingerprint == peer.id })
-                            }) { peer in
-                                Button(peer.name) {
-                                    Task {
-                                        do { try await model.addGroupMember(peer.id, to: group.id) }
-                                        catch { model.errorMessage = error.localizedDescription }
-                                    }
-                                }
-                            }
-                        }
-                        .disabled(group.members.count >= GroupConversation.maximumMemberCount || model.groupEligiblePeers.allSatisfy { peer in
-                            group.members.contains(where: { $0.fingerprint == peer.id })
-                        })
-                        Divider()
-                        Button("退出并随机转让群主", role: .destructive) {
-                            Task {
-                                do {
-                                    try await model.leaveGroupAsOwner(group.id)
-                                    if selectedGroupID == group.id { selectedGroupID = nil }
-                                } catch { model.errorMessage = error.localizedDescription }
-                            }
-                        }
-                    } else {
-                        Divider()
-                        Button("申请退出群聊", role: .destructive) { model.requestLeaveGroup(group.id) }
-                    }
-                } label: { Label("成员", systemImage: "person.3") }
+                Button {
+                    groupMemberSearch = ""
+                    showGroupMembers.toggle()
+                } label: {
+                    Label("成员 \(group.members.count)/\(GroupConversation.maximumMemberCount)", systemImage: "person.3")
+                }
+                .buttonStyle(.borderless)
+                .help("查看成员、连接状态和群管理操作")
+                .accessibilityLabel("群聊成员，\(group.members.count) 位")
             }
-            if viewingConnected { Button("断开连接") { model.disconnect(peerID: currentPeerID) } }
+            if viewingConnected { Button("断开连接") { model.disconnectByUser(peerID: currentPeerID) } }
             else if selectedGroupID == nil && currentConnectionPending {
                 Button("取消连接") {
                     if let device = currentDevice { model.cancelConnection(serviceName: device.serviceName) }
@@ -580,12 +599,14 @@ struct ContentView: View {
                     }
                     ForEach(visibleMessages, id: \.rowID) { message in
                         ChatMessageView(message: message,
+                                        avatarId: message.direction == .sent ? model.settings.avatarId : model.avatarId(for: message.peerID),
                                         canRetry: currentGroup.map { model.canRetryGroupMessage($0.id, messageID: message.id) }
-                                            ?? (viewingConnected && (message.kind == .text ? !model.isSendingText(to: currentPeerID) : !model.isSending(to: currentPeerID))),
+                                            ?? (!viewingConnected || (message.kind == .text ? !model.isSendingText(to: currentPeerID) : !model.isSending(to: currentPeerID))),
                                         retry: {
                                             if let currentGroup { model.retryGroupMessage(currentGroup.id, messageID: message.id) }
                                             else { model.retryMessage(message) }
                                         },
+                                        cancel: { model.cancelOutboxMessage(message) },
                                         accept: { model.decideIncomingFile(message.id, peerID: message.peerID, accepted: true) },
                                         decline: { model.decideIncomingFile(message.id, peerID: message.peerID, accepted: false) })
                             .id(message.rowID)
@@ -604,12 +625,12 @@ struct ContentView: View {
             HStack(spacing: 16) {
                 Button {
                     if let currentGroup { model.chooseAndSendGroupFiles(groupID: currentGroup.id, imagesOnly: true) }
-                    else { model.chooseAndSendFiles(imagesOnly: true) }
+                    else { model.chooseAndSendFiles(imagesOnly: true, to: currentPeerID) }
                 } label: { Label("图片", systemImage: "photo") }
                     .disabled(!composerEnabled || (currentGroup.map { model.isSendingGroupFile($0.id) } ?? model.isSending(to: currentPeerID)))
                 Button {
                     if let currentGroup { model.chooseAndSendGroupFiles(groupID: currentGroup.id) }
-                    else { model.chooseAndSendFiles() }
+                    else { model.chooseAndSendFiles(to: currentPeerID) }
                 } label: { Label("文件", systemImage: "paperclip") }
                     .disabled(!composerEnabled || (currentGroup.map { model.isSendingGroupFile($0.id) } ?? model.isSending(to: currentPeerID)))
                 Button { showEmojiPalette.toggle() } label: { Label("表情", systemImage: "face.smiling") }
@@ -629,12 +650,13 @@ struct ContentView: View {
             }.buttonStyle(.borderless)
             ChatComposer(text: draft, enabled: composerEnabled, onSend: sendDraft) { image in
                 if let currentGroup { model.startSendingPastedImage(image, toGroupID: currentGroup.id) }
-                else { model.startSendingPastedImage(image) }
+                else { model.startSendingPastedImage(image, to: currentPeerID) }
             }
                 .frame(height: 70)
                 .overlay(alignment: .topLeading) {
                     if draft.wrappedValue.isEmpty {
-                        Text(selectedGroupID != nil ? "输入群消息" : viewingConnected ? "输入消息，也可以将图片或文件拖到这里" : "连接设备后即可发送消息")
+                        Text(selectedGroupID != nil ? "输入群消息" : viewingConnected ? "输入消息，也可以将图片或文件拖到这里"
+                             : composerEnabled ? "对方未连接，消息会在连接后自动发送" : "连接设备后即可发送消息")
                             .font(.system(size: 14)).foregroundStyle(.tertiary).padding(.leading, 10).padding(.top, 8)
                             .allowsHitTesting(false)
                     }
@@ -656,8 +678,8 @@ struct ContentView: View {
                 model.startSendingGroupFiles(files, groupID: currentGroup.id)
                 return true
             }
-            guard viewingConnected, !model.isSending(to: currentPeerID) else { return false }
-            model.startSending(files)
+            guard composerEnabled, !model.isSending(to: currentPeerID) else { return false }
+            model.startSending(files, to: currentPeerID)
             return true
         } isTargeted: { dropTargeted = $0 }
     }
@@ -668,7 +690,7 @@ struct ContentView: View {
         let text = draft.wrappedValue
         let sent: Bool
         if let currentGroup { sent = model.sendGroupText(text, groupID: currentGroup.id) }
-        else { sent = model.sendText(text) }
+        else { sent = model.sendText(text, to: currentPeerID) }
         if sent {
             model.clearDraft(for: key)
             return
@@ -679,16 +701,35 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private func trustedPeerButton(_ peerID: String) -> some View {
+        if model.isTrustedPeer(peerID) {
+            Button("取消常驻联系人") { try? model.setTrustedPeer(peerID, trusted: false) }
+        } else {
+            Button("设为常驻联系人") { try? model.setTrustedPeer(peerID, trusted: true) }
+                .help("以后这台设备上线时自动连接，接收文件仍需确认")
+        }
+    }
+
     private var approvalSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
             Label("连接请求", systemImage: "link").font(.title2.bold())
-            Text("\(model.pendingConnectionPeerName ?? "附近设备") 想要连接你的设备。").font(.headline)
+            HStack(spacing: 12) {
+                AvatarView(avatarID: model.avatarId(for: model.pendingConnectionPeerFingerprint ?? ""), size: 48)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(model.pendingConnectionPeerName ?? "附近设备") 想要连接你的设备。").font(.headline)
+                    Text("已验证对方设备身份；头像仅用于显示。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Text("同意后，双方可以直接聊天、发送图片和文件，直到断开连接。")
                 .font(.subheadline).foregroundStyle(.secondary)
             Text("接收位置：\(model.settings.receiveDirectory.path)").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("拒绝") { model.approveConnection(false) }.keyboardShortcut(.cancelAction)
                 Spacer()
+                Button("同意并以后自动连接") { model.approveConnection(true, trust: true) }
+                    .help("设为常驻联系人：以后这台设备上线时自动连接，接收文件仍需确认")
                 Button("同意连接") { model.approveConnection(true) }.keyboardShortcut(.defaultAction)
             }
         }.padding(24).frame(width: 440).interactiveDismissDisabled()

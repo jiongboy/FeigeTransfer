@@ -56,13 +56,14 @@ public sealed partial class SendPage : Page
     {
         base.OnNavigatedTo(e);
         ConversationList.ItemsSource = _conversationRows; PeerList.ItemsSource = Session.Peers;
-        SyncConversationRows();
+        SyncConversationRows(); RefreshConversationAvatars();
         if (_selected is not null)
         { _selected.Messages.CollectionChanged -= OnMessagesChanged; _selected.Messages.CollectionChanged += OnMessagesChanged; }
         Session.Conversations.CollectionChanged += OnListsChanged;
         Session.Peers.CollectionChanged += OnListsChanged;
         Session.StateChanged += OnStateChanged; Session.StatusChanged += OnStatusChanged; Session.Failed += OnFailed;
         RefreshState();
+        Session.SetVisibleConversation(_selected?.Fingerprint);
     }
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
@@ -72,7 +73,12 @@ public sealed partial class SendPage : Page
         foreach (var conversation in _observedConversations) conversation.PropertyChanged -= OnConversationChanged;
         _observedConversations.Clear();
         if (_selected is not null) _selected.Messages.CollectionChanged -= OnMessagesChanged;
+        Session.SetVisibleConversation(null);
         base.OnNavigatedFrom(e);
+    }
+    private void RefreshConversationAvatars()
+    {
+        foreach (var message in _conversationRows.SelectMany(conversation => conversation.Messages)) message.RefreshAvatar();
     }
     private void OnStateChanged(object? sender, EventArgs e) { SyncConversationRows(); RefreshState(); }
     private void OnStatusChanged(object? sender, string status) { _pageError = null; _showNetworkAdvice = false; RefreshState(); }
@@ -89,6 +95,7 @@ public sealed partial class SendPage : Page
         ManualButton.IsEnabled = Session.CanConnect;
         PeerList.IsEnabled = Session.CanConnect || Session.CanConnectV4;
         RefreshPeersButton.IsEnabled = Session.IsRunning && !Session.IsStarting && !Session.IsRefreshingPeers;
+        EmptyRefreshButton.IsEnabled = RefreshPeersButton.IsEnabled;
         RefreshPeersProgress.IsActive = Session.IsRefreshingPeers;
         RefreshPeersProgress.Visibility = Session.IsRefreshingPeers ? Visibility.Visible : Visibility.Collapsed;
         RefreshPeersIcon.Visibility = Session.IsRefreshingPeers ? Visibility.Collapsed : Visibility.Visible;
@@ -99,15 +106,16 @@ public sealed partial class SendPage : Page
         if (_selected is null && !Session.IsStarting)
             ConversationList.SelectedItem = _conversationRows.FirstOrDefault(c => c.Fingerprint == Session.ActiveFingerprint) ?? _conversationRows.FirstOrDefault();
         PeerTitle.Text = _selected?.Name ?? "消息";
-        PeerAvatar.Text = _selected?.AvatarText ?? "鸽";
+        PeerAvatarImage.Source = AvatarCatalog.GetImageSource(_selected?.AvatarId ?? Session.Settings.AvatarId);
         ConnectionState.Text = _selected is null ? "选择设备，开始安全传输" : Session.CanSend(_selected) ? "已连接 · 可以发送消息和文件" : "未连接 · 会话记录保存在本机";
         DisconnectButton.Content = Session.IsConnectingTo(_selected) ? "取消请求" : "断开连接";
-        bool canSend = Session.CanSend(_selected);
+        bool canSend = Session.CanCompose(_selected);
         Composer.IsEnabled = canSend;
-        Composer.PlaceholderText = canSend ? $"发送给 {_selected!.Name}" : "连接设备后，在这里输入消息…";
+        Composer.PlaceholderText = !canSend ? "连接设备后，在这里输入消息…" :
+            Session.CanSend(_selected) ? $"发送给 {_selected!.Name}" : "对方未连接，消息会在连接后自动发送";
         SendButton.IsEnabled = canSend && !Session.IsSendingTextTo(_selected) && !string.IsNullOrWhiteSpace(Composer.Text);
         EmojiButton.IsEnabled = canSend;
-        ImagesButton.IsEnabled = FilesButton.IsEnabled = canSend && !Session.IsSendingFilesTo(_selected);
+        ImagesButton.IsEnabled = FilesButton.IsEnabled = FolderButton.IsEnabled = canSend && !Session.IsSendingFilesTo(_selected);
         UpdateEmptyStates();
         UpdateLayoutForSize();
     }
@@ -124,6 +132,7 @@ public sealed partial class SendPage : Page
         _switching = true; Composer.Text = _selected?.Draft ?? ""; _switching = false;
         MessageList.ItemsSource = _selected?.Messages;
         if (_selected is not null) _selected.Messages.CollectionChanged += OnMessagesChanged;
+        Session.SetVisibleConversation(_selected?.Fingerprint);
         RefreshState(); ScrollToEnd();
     }
     private void OnMessagesChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -169,16 +178,15 @@ public sealed partial class SendPage : Page
         PeerCount.Text = $"附近设备 · {Session.Peers.Count}";
         PeerRefreshStatus.Visibility = Session.IsRefreshingPeers || Session.PeerRefreshFailed || Session.LastPeerRefreshAt is not null
             ? Visibility.Visible : Visibility.Collapsed;
-        PeerRefreshStatus.Text = Session.IsRefreshingPeers ? "正在查找设备…"
-            : Session.PeerRefreshFailed ? "刷新未完成，请重试或查看连接帮助。"
-            : Session.LastPeerRefreshAt is { } refreshed ? $"{(Session.Peers.Count == 0 ? "暂未发现设备" : "已刷新")} · {refreshed:HH:mm:ss}" : "";
-        PeersEmpty.Text = Session.IsRefreshingPeers ? "正在查找同一局域网中的设备，请稍候…"
-            : "请在另一台电脑打开飞鸽快传，并连接到同一局域网。可刷新设备、用 + 手动连接，或查看连接帮助。";
+        PeerRefreshStatus.Text = Session.IsRefreshingPeers ? "正在搜索附近设备…"
+            : Session.PeerRefreshFailed ? "搜索未完成，请重新搜索或查看连接排查。"
+            : Session.LastPeerRefreshAt is { } refreshed ? $"上次刷新：{refreshed:HH:mm:ss}" : "";
+        PeersEmptyTitle.Text = Session.IsRefreshingPeers ? "正在搜索附近设备…" : "尚未找到设备";
         ConversationsEmpty.Visibility = _conversationRows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         bool hasHidden = Session.Conversations.Any(Session.IsConversationHidden);
         EmptyConversationsTitle.Text = hasHidden ? "暂无可见会话" : "还没有会话";
         EmptyConversationsDescription.Text = hasHidden ? "可在设置中恢复隐藏会话，收到新消息时也会再次显示。" : "连接附近设备后，会话将显示在这里。";
-        PeersEmpty.Visibility = Session.Peers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        PeersEmptyPanel.Visibility = Session.Peers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         ChatEmpty.Visibility = _selected?.Messages.Count is null or 0 ? Visibility.Visible : Visibility.Collapsed;
         EmptyTitle.Text = _selected is null ? "让传输像聊天一样简单" : "开启一段新会话";
         EmptyDescription.Text = _selected is null ? "从附近设备发起连接，轻松互传文字、图片和文件。" :
@@ -209,6 +217,12 @@ public sealed partial class SendPage : Page
             disconnect.Click += async (_, _) => { try { await Session.DisconnectAsync(target); } catch (Exception ex) { ShowError(ErrorText.Describe(ex)); } };
             menu.Items.Add(disconnect);
         }
+        bool trusted = Session.IsTrustedPeer(target.Fingerprint);
+        var trust = new MenuFlyoutItem { Text = trusted ? "取消常驻联系人" : "设为常驻联系人" };
+        AutomationProperties.SetAutomationId(trust, "TrustConversationMenuItem");
+        ToolTipService.SetToolTip(trust, "常驻联系人上线后自动连接，接收文件仍需确认");
+        trust.Click += (_, _) => Session.SetTrustedPeer(target.Fingerprint, !trusted);
+        menu.Items.Add(trust);
         var hide = new MenuFlyoutItem { Text = "隐藏会话" };
         AutomationProperties.SetAutomationId(hide, "HideConversationMenuItem");
         hide.Click += async (_, _) => { try { await Session.SetConversationHiddenAsync(target, true); } catch (Exception ex) { ShowError("隐藏失败：" + ErrorText.Describe(ex)); } };
@@ -367,7 +381,7 @@ public sealed partial class SendPage : Page
     private async Task PasteFilesFromClipboardAsync()
     {
         var conversation = _selected;
-        if (!Session.CanSend(conversation) || Session.IsSendingFilesTo(conversation)) return;
+        if (!Session.CanCompose(conversation) || Session.IsSendingFilesTo(conversation)) return;
         try
         {
             var items = await Clipboard.GetContent().GetStorageItemsAsync();
@@ -385,7 +399,7 @@ public sealed partial class SendPage : Page
     private async Task PasteImageFromClipboardAsync()
     {
         var conversation = _selected;
-        if (!Session.CanSend(conversation) || Session.IsSendingFilesTo(conversation)) return;
+        if (!Session.CanCompose(conversation) || Session.IsSendingFilesTo(conversation)) return;
         try
         {
             // BitmapDecoder/BitmapEncoder are plain WinRT objects, not IDisposable; only the
@@ -472,6 +486,7 @@ public sealed partial class SendPage : Page
         catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
     }
     private async void OnConnectionHelpClick(object sender, RoutedEventArgs e) => await ConnectionHelp.ShowAsync();
+    private async void OnNetworkTroubleshootingClick(object sender, RoutedEventArgs e) => await ConnectionHelp.ShowNetworkTroubleshootingAsync();
     private async void OnRestartClick(object sender, RoutedEventArgs e)
     {
         if (_showNetworkAdvice) await ConnectionHelp.ShowNetworkTroubleshootingAsync();
@@ -483,7 +498,7 @@ public sealed partial class SendPage : Page
     private async void OnFilesClick(object sender, RoutedEventArgs e) => await PickAttachmentsAsync(false);
     private async Task PickAttachmentsAsync(bool images)
     {
-        var conversation = _selected; if (!Session.CanSend(conversation)) return;
+        var conversation = _selected; if (!Session.CanCompose(conversation)) return;
         try
         {
             var picker = new FileOpenPicker();
@@ -494,18 +509,30 @@ public sealed partial class SendPage : Page
         }
         catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
     }
+    private async void OnFolderClick(object sender, RoutedEventArgs e)
+    {
+        var conversation = _selected; if (!Session.CanCompose(conversation)) return;
+        try
+        {
+            var picker = new FolderPicker();
+            picker.FileTypeFilter.Add("*");
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow!));
+            if (await picker.PickSingleFolderAsync() is { } folder) await Session.SendFilesAsync(conversation!, [folder.Path]);
+        }
+        catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
+    }
     private void OnDragOver(object sender, DragEventArgs e)
     {
-        e.AcceptedOperation = Session.CanSend(_selected) && !Session.IsSendingFilesTo(_selected) && e.DataView.Contains(StandardDataFormats.StorageItems)
+        e.AcceptedOperation = Session.CanCompose(_selected) && !Session.IsSendingFilesTo(_selected) && e.DataView.Contains(StandardDataFormats.StorageItems)
             ? DataPackageOperation.Copy : DataPackageOperation.None;
     }
     private async void OnDrop(object sender, DragEventArgs e)
     {
-        var conversation = _selected; if (!Session.CanSend(conversation)) return;
+        var conversation = _selected; if (!Session.CanCompose(conversation)) return;
         try
         {
+            // Folders need a v6 peer; SendFilesAsync explains when the peer is older.
             var items = await e.DataView.GetStorageItemsAsync();
-            if (items.Any(i => i is not StorageFile)) throw new ArgumentException("目前仅支持文件，请先将文件夹打包。");
             await Session.SendFilesAsync(conversation!, items.Select(i => i.Path).ToArray());
         }
         catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
@@ -536,6 +563,12 @@ public sealed partial class SendPage : Page
         }
         catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
     }
+    private async void OnCancelOutboxClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not DependencyObject element || MessageFromElement(element) is not { } item || _selected is null) return;
+        try { await Session.CancelOutboxAsync(_selected, item); }
+        catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
+    }
     private async void OnPreviewAttachmentClick(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement element || MessageFromElement(element) is not { } item || !item.CanOpenPreview) return;
@@ -550,6 +583,7 @@ public sealed partial class SendPage : Page
         if (sender is not DependencyObject element || MessageFromElement(element) is not { } item) return;
         try
         {
+            if (Directory.Exists(item.Entry.Path)) { await Launcher.LaunchFolderPathAsync(item.Entry.Path); return; }
             var file = await StorageFile.GetFileFromPathAsync(item.Entry.Path);
             if (!await Launcher.LaunchFileAsync(file)) throw new IOException("系统未能打开该文件，请检查是否有相应应用。");
         }
@@ -560,9 +594,11 @@ public sealed partial class SendPage : Page
         if (sender is not DependencyObject element || MessageFromElement(element) is not { } item) return;
         try
         {
-            var file = await StorageFile.GetFileFromPathAsync(item.Entry.Path);
-            var options = new FolderLauncherOptions(); options.ItemsToSelect.Add(file);
-            await Launcher.LaunchFolderAsync(await file.GetParentAsync(), options);
+            IStorageItem target = Directory.Exists(item.Entry.Path)
+                ? await StorageFolder.GetFolderFromPathAsync(item.Entry.Path)
+                : await StorageFile.GetFileFromPathAsync(item.Entry.Path);
+            var options = new FolderLauncherOptions(); options.ItemsToSelect.Add(target);
+            await Launcher.LaunchFolderPathAsync(Path.GetDirectoryName(item.Entry.Path)!, options);
         }
         catch (Exception ex) { ShowError("无法显示文件位置。" + ErrorText.Describe(ex)); }
     }

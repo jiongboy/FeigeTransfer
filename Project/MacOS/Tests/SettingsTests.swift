@@ -92,4 +92,28 @@ final class SettingsTests: XCTestCase {
         XCTAssertNil(resumed.settings.setupStep)
         XCTAssertNil(TransferModel(supportDirectory: root).settings.setupStep)
     }
+
+    @MainActor
+    func testLegacySettingsWithoutAvatarFieldsKeepSetupAndUseBirdFallback() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let receiveDirectory = root.appendingPathComponent("Old Received")
+        let oldSettings: [String: Any] = [
+            "deviceName": "Legacy Mac",
+            "receiveDirectory": receiveDirectory.absoluteString,
+            "firstRunComplete": true
+        ]
+        let data = try JSONSerialization.data(withJSONObject: oldSettings)
+        try data.write(to: root.appendingPathComponent("settings.json"))
+
+        let model = TransferModel(supportDirectory: root)
+        XCTAssertTrue(model.settings.firstRunComplete)
+        XCTAssertEqual(model.settings.avatarId, "bird")
+        XCTAssertTrue(model.settings.peerAvatarIds.isEmpty)
+
+        try model.saveAvatarId("fox")
+        let restored = TransferModel(supportDirectory: root)
+        XCTAssertEqual(restored.settings.avatarId, "fox")
+    }
 }
