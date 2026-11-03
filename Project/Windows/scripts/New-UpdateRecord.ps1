@@ -1,12 +1,15 @@
 <#
 .SYNOPSIS
-  Create an unsigned release record from final, already built/signed EXE packages under Windows/dist/build.
+  Create an unsigned release record from final, already built/signed EXE packages under Project/Windows/dist/build.
+.PARAMETER ProtocolVersion
+  Highest communication protocol the packaged build speaks. Required so a release never inherits a stale value.
 .NOTES
   Generates release metadata only after packaging is authorized; never builds or uploads a package.
 #>
 [CmdletBinding()]
 param([Parameter(Mandatory)][string[]]$InstallerPath, [Parameter(Mandatory)][string]$Tag,
-    [Parameter(Mandatory)][string]$SummaryFile, [string]$MinimumSystemVersion = '10.0.17763.0')
+    [Parameter(Mandatory)][string]$SummaryFile, [Parameter(Mandatory)][ValidateRange(3, 255)][int]$ProtocolVersion,
+    [string]$MinimumSystemVersion = '10.0.17763.0')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
@@ -40,7 +43,7 @@ foreach ($inputPath in $InstallerPath) {
     $file = [IO.Path]::GetFullPath($inputPath)
     # The trailing separator keeps sibling prefixes such as dist\build_evil from matching.
     if (!$file.StartsWith($builds, [StringComparison]::OrdinalIgnoreCase) -or !(Test-Path -LiteralPath $file -PathType Leaf)) {
-        throw 'Installer must exist under Windows/dist/build.'
+        throw 'Installer must exist under Project/Windows/dist/build.'
     }
     foreach ($candidate in @($file, "$file.json")) {
         $item = Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
@@ -78,7 +81,7 @@ foreach ($inputPath in $InstallerPath) {
         minimumSystemVersion=$MinimumSystemVersion; summary=$summary
         notesUrl=([Uri]::new([Uri]::new(([string]$lan.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/notes")).AbsoluteUri
         downloadUrl=([Uri]::new([Uri]::new(([string]$lan.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/$name")).AbsoluteUri
-        size=(Get-Item -LiteralPath $file).Length; sha256=$hash; protocolVersion=3
+        size=(Get-Item -LiteralPath $file).Length; sha256=$hash; protocolVersion=$ProtocolVersion
     }
 }
 $output = Join-Path $builds "$Tag-record.json"

@@ -3,6 +3,14 @@
 > 只记录对双端或协作方式有影响的变更，按时间倒序排列。平台内部实现细节见各平台开发日志：
 > [macOS 开发日志](../MacOS/DevelopmentLog.md) · [Windows 开发日志](../Windows/DevelopmentLog.md)
 
+## 2026-11-03 正式发布 Windows 1.3.0 与 macOS 0.5.0
+
+- 从 master `c6d68c4` 构建。Windows 1.3.0 build 1306 在 ROG 用发布证书签名（x64、arm64，带时间戳）；macOS 0.5.0 build 16 用 Developer ID 签名并经 Apple 公证（Accepted，已 staple），`spctl` 结果为 Notarized Developer ID。交付物、校验文件和发布说明位于 `Release/Windows/1.3.0/` 与 `Release/MacOS/0.5.0/`。
+- GitHub：新建 `v1.3.0`（Windows，设为 Latest）与 `macos-v0.5.0`（不设 Latest，避免占用 Windows 回退源的 `latest/download`）。两者都只含安装包和校验文件；从 GitHub 重新下载后 SHA-256 一致。
+- Mac mini 局域网更新源：Windows 清单切到 1.3.0 b1306，首次同时提供 x64 和 arm64；macOS 清单从 0.4.0 b11 切到 0.5.0 b16（0.4.1 未上过更新源）。版本包先上传到临时目录核对哈希，再整体改名为 `versions/<tag>`，经 HTTP 重新下载校验后才替换清单，旧清单保留为 `*.previous.json`。两份清单的 `protocolVersion` 均为 6。
+- 发布中发现并修复：`Feige.UpdateTool sign` 仍按重构前的 `<root>/Windows/dist/build` 定位，改为 `Project/Windows/dist/build`；`New-UpdateRecord.ps1` 把 `protocolVersion` 写死为 3，改为必填参数 `-ProtocolVersion`；`Project/Windows/dist/` 实际被 `!Project/**` 重新纳入 Git，已补忽略规则。
+- 未完成：两个正式包的干净机器安装、从 Windows 1.2.1 / macOS 0.4.1 的应用内升级均未实测。GitHub 回退源仍没有可用的 Windows 清单（局域网清单的下载地址不能用于 GitHub 来源）。
+
 ## 2026-11-03 身份密钥备份与正式发布准备
 
 - 起因：同一台电脑卸载重装或资料目录被删后会生成新的身份密钥，对方看到的就是“另一台设备”，聊天因此分成多段。

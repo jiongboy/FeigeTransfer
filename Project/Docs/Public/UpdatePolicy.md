@@ -2,7 +2,7 @@
 
 规则版本：1.0 · 整理日期：2026-10-24
 
-本文件是 macOS 与 Windows 应用更新的共同规范，权威版本与两端源码统一在 `main` 主线上维护。本文规定后续实现与验收要求。当前状态（2026-10-29）：Windows 已发布 1.2.1 并完成应用内更新实测；macOS 0.4.0 的局域网更新来源与 P-256 信任根已配置，build 11 已发布到 Mac mini。本机 macOS 27 arm64 客户端完成 build 9 → 10 的完整升级验收，并从 build 10 → 11 更新后验证成功提示可关闭。macOS 尚无 GitHub 回退，Apple 公证、干净机器安装及 Mac mini 客户端验收未完成；Mac mini 当前为 macOS 12.7.6 Intel，低于应用最低系统版本 13.0。各端实际完成情况、测试结果和限制分别写入平台开发日志，跨平台摘要写入[更新日志](UpdateLog.md)。
+本文件是 macOS 与 Windows 应用更新的共同规范，权威版本与两端源码统一在 `main` 主线上维护。本文规定后续实现与验收要求。当前状态（2026-11-03）：Windows 1.3.0 build 1306（x64、arm64）与 macOS 0.5.0 build 16（Developer ID 签名并公证）已发布到 Mac mini 局域网更新源和 GitHub Release；两者从上一正式版的应用内升级尚未实测。此前 Windows 1.2.1 完成过应用内更新实测，本机 macOS 27 arm64 客户端完成 build 9 → 10 → 11 的升级验收。macOS 尚无 GitHub 回退，干净机器安装及 Mac mini 客户端验收未完成；Mac mini 当前为 macOS 12.7.6 Intel，低于应用最低系统版本 13.0。各端实际完成情况、测试结果和限制分别写入平台开发日志，跨平台摘要写入[更新日志](UpdateLog.md)。
 
 ## 1. 范围与基本原则
 

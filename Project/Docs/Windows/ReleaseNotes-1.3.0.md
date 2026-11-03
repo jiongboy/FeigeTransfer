@@ -1,6 +1,6 @@
-# Windows 1.3.0 发布说明（草稿）
+# Windows 1.3.0 发布说明
 
-状态：**草稿，尚未打包**。正式打包时复制到 `Release/Windows/1.3.0/`，并补上实际构建号、文件大小与 SHA-256。逐轮实现与验证见 [Windows 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
+状态：**已发布**（2026-11-03，build 1306）。含构建号、文件大小与 SHA-256 的定稿在 `Release/Windows/1.3.0/ReleaseNotes-1.3.0.md`，公开页面为 [GitHub v1.3.0](https://github.com/jiongboy/FeigeTransfer/releases/tag/v1.3.0)。逐轮实现与验证见 [Windows 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
 
 ## 新功能
 

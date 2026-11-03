@@ -22,6 +22,8 @@ Project/**/obj/
 Project/**/.build/
 Project/**/.swiftpm/
 Project/**/.DS_Store
+# Windows packaging staging (installers, records, manifests, update tool build)
+Project/Windows/dist/
 
 # macOS build outputs and local IDE state
 **/.DS_Store

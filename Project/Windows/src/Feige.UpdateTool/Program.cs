@@ -56,11 +56,11 @@ try
         }
         string root = Path.GetFullPath(args[1]), sourcePath = Path.GetFullPath(args[2]), keyName = args[3], keyId = args[4];
         string input = Path.GetFullPath(args[5]), output = Path.GetFullPath(args[6]);
-        // The signed manifest is produced in the ignored build staging folder and archived
-        // into download/ by Publish-LanUpdate.ps1 once the LAN upload succeeds.
-        string builds = Path.Combine(root, "Windows", "dist", "build") + Path.DirectorySeparatorChar;
+        // ROOT is the repository root. The signed manifest is produced in the ignored build staging
+        // folder and archived into Release/Windows/<version>/ by Publish-LanUpdate.ps1 once the LAN upload succeeds.
+        string builds = Path.Combine(root, "Project", "Windows", "dist", "build") + Path.DirectorySeparatorChar;
         if (!File.Exists(Path.Combine(root, "AGENTS.md")) || !output.StartsWith(builds, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("清单输出必须位于 Windows/dist/build 中。");
+            throw new InvalidDataException("清单输出必须位于 Project/Windows/dist/build 中。");
         var sources = ReadSources(sourcePath);
         var source = sources.FirstOrDefault(s => s.PublicKeys.ContainsKey(keyId))
             ?? throw new InvalidDataException("签名公钥标识尚未配置到客户端。");

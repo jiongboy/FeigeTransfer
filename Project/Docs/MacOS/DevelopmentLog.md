@@ -4,6 +4,13 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-03：0.5.0 build 16 正式发布
+
+- **打包与公证**：从 master `c6d68c4` 运行 `FEIGE_NOTARY_PROFILE=feige-notary package-app.sh`，Developer ID Application: Song Li (9C8Y647J2R) 签名，公证提交 `0aa22599-829c-483b-8890-8593c12f2c49` 为 Accepted，已 staple。`spctl` 为 accepted / Notarized Developer ID；zip 解压后的应用同样通过 stapler 与 spctl。`Feige.icns` 与仓库主图标一致，10 个头像齐全。`FeigeMac-0.5.0.zip` 3,396,083 字节，SHA-256 `0eb7cb33…bfafe550`。
+- **更新源**：发布记录 `0.5.0-b16`（`protocolVersion` 6）用 `~/.feige/macos-release.pem` 签名。本机 Python 没有 `cryptography`，改用 `openssl dgst -sha256 -sign` 生成同样的 P-256 DER 签名；公钥与 `UpdateSource.json` 一致，`openssl` 验签通过。按 Windows 发布脚本的顺序上传到 Mac mini：临时目录 → 哈希核对 → 改名为 `versions/0.5.0-b16` → HTTP 重新下载核对 → 备份为 `feige-macos-update.previous.json` 后替换清单。签名清单与发布记录另存到 `Release/MacOS/0.5.0/`。
+- **GitHub**：Release `macos-v0.5.0` 含 zip 与校验文件，设为非 Latest，避免覆盖 Windows 回退源用的 `latest/download`；重新下载校验通过。
+- **未完成**：干净机器安装、0.4.x → 0.5.0 应用内升级未实测。macOS 仍没有 GitHub 更新来源。
+
 ## 2026-11-03：身份密钥钥匙串副本与 0.5.0 发布准备
 
 - **身份副本**：`EncryptedIdentityStore` 写入 `identity.pkcs1.bin` 时，把同一份 AES-GCM 密文另存为钥匙串通用密码项 `identity-sealed-key`（`AfterFirstUnlockThisDeviceOnly`，与包装密钥同属一个 service）。密钥文件缺失而副本存在时，从副本恢复文件并沿用原指纹；旧安装下次启动时补建副本。`delete()` 同时清除副本。副本没有包装密钥就无法解密，因此不降低现有安全性；钥匙串被清空时仍会生成新身份。

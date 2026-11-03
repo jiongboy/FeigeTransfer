@@ -1,6 +1,6 @@
 # Windows 更新来源（局域网 + GitHub）
 
-更新至 2026-10-27。Windows EXE 客户端支持**有序多更新源**：先尝试家庭/办公室局域网 `http://192.168.50.229:8080/updates`，不可达时回退到 GitHub Release `https://github.com/jiongboy/FeigeTransfer/releases/latest/download`。MSIX 仍须通过对应发行渠道更新。完成正式签名发布和 Windows 客户端端到端安装验收前，不能称为更新发布闭环已上线。
+更新至 2026-11-03。Windows EXE 客户端支持**有序多更新源**：先尝试家庭/办公室局域网 `http://192.168.50.229:8080/updates`，不可达时回退到 GitHub Release `https://github.com/jiongboy/FeigeTransfer/releases/latest/download`。MSIX 仍须通过对应发行渠道更新。完成正式签名发布和 Windows 客户端端到端安装验收前，不能称为更新发布闭环已上线。
 
 ## 多来源模型
 
@@ -16,7 +16,7 @@
 
 两个来源都使用同一套清单协议：客户端从 `<baseUri>/windows/<channel>/feige-windows-update.json` 读取签名清单，版本包位于 `<baseUri>/windows/<channel>/versions/<tag>/<file>.exe`，说明位于 `<baseUri>/windows/<channel>/versions/<tag>/notes`。局域网 stable URL 是 `http://192.168.50.229:8080/updates/windows/stable/...`；GitHub 来源的 base 是 `https://github.com/jiongboy/FeigeTransfer/releases/latest/download`，因此清单地址为 `.../latest/download/windows/stable/feige-windows-update.json`，需作为 Release 资产上传。
 
-截至 2026-11-02，Mac mini LAN 清单端点返回 HTTP 200；Windows .NET 10 `Feige.UpdateTool verify` 已验证清单签名与来源 URL，清单记录 1.2.1 build 1301。此验证没有下载或校验安装包。ROG 对 GitHub latest-release 清单地址的请求返回 HTTP 404。
+截至 2026-11-03，Mac mini LAN 清单记录 1.3.0 build 1306（x64、arm64），已用 `Feige.UpdateTool verify` 验签；两个安装包经 HTTP 重新下载，大小与 SHA-256 和清单一致。GitHub latest-release 下没有清单（见下文）。
 
 LAN 地址使用明文 HTTP，只有在应用配置显式启用 `allowInsecurePrivateNetwork` 且主机是受信任的私有 IPv4 时才可接受；Host 固定为 `192.168.50.229`，HTTP 端口固定 `8080`，公共/非私网地址、其他 Host/端口、HTTPS/HTTP scheme 变更、查询串及不在更新渠道路径内的地址都会被拒绝。该例外仅适合信任的本地网络；不适用于公共 Wi-Fi、未知设备可接入的网络或互联网分发。外网设备不能访问此更新源。
 
@@ -24,11 +24,11 @@ LAN 地址使用明文 HTTP，只有在应用配置显式启用 `allowInsecurePr
 
 ## Mac mini 准备
 
-Mac mini 上已执行 `Project/Windows/scripts/Setup-LanUpdateServer.sh`：创建 `/usr/local/var/www/feige-updates/windows/stable/versions`，在现有 nginx `server` 中加入 `location /updates/`，经 `nginx -t` 验证后 reload。缺失清单返回 HTTP 404，写请求返回 403；配置会备份到 `/usr/local/etc/nginx/`（不在 nginx `servers/*` include 目录中）。nginx 进程仍监听 `*:8080`，更新 location 由 `allow 192.168.50.0/24` / `deny all` 限制访问；发布 SSH 用户需要能写更新目录。macOS 使用独立的 `/usr/local/var/www/feige-updates/macos/stable/versions` 与独立 P-256 信任根，0.4.0 build 11 已发布并由本机 macOS 客户端完成应用内更新及关闭提示验收；Windows 客户端的另一台 LAN 实机仍待测试。Mac mini 系统版本低于 macOS 应用最低要求，仅作文件服务器。
+Mac mini 上已执行 `Project/Windows/scripts/Setup-LanUpdateServer.sh`：创建 `/usr/local/var/www/feige-updates/windows/stable/versions`，在现有 nginx `server` 中加入 `location /updates/`，经 `nginx -t` 验证后 reload。缺失清单返回 HTTP 404，写请求返回 403；配置会备份到 `/usr/local/etc/nginx/`（不在 nginx `servers/*` include 目录中）。nginx 进程仍监听 `*:8080`，更新 location 由 `allow 192.168.50.0/24` / `deny all` 限制访问；发布 SSH 用户需要能写更新目录。macOS 使用独立的 `/usr/local/var/www/feige-updates/macos/stable/versions` 与独立 P-256 信任根，当前发布 0.5.0 build 16（2026-11-03，已公证；此前 0.4.0 build 11 由本机 macOS 客户端完成应用内更新及关闭提示验收）；Windows 客户端的另一台 LAN 实机仍待测试。Mac mini 系统版本低于 macOS 应用最低要求，仅作文件服务器。
 
 健康检查可访问：
 
-- `http://192.168.50.229:8080/updates/windows/stable/feige-windows-update.json`（截至 2026-11-02 返回 HTTP 200；签名清单验证通过，记录 1.2.1 build 1301）
+- `http://192.168.50.229:8080/updates/windows/stable/feige-windows-update.json`（截至 2026-11-03 返回 HTTP 200；签名清单验证通过，记录 1.3.0 build 1306）
 - 局域网另一台客户端也须能通过上述 URL 访问
 
 Mac mini DHCP 地址需保持固定；nginx 由现有 Homebrew LaunchAgent 管理。该主机目前 macOS 12.7.6 / Intel x86_64，不能作为 Windows 安装包构建/签名环境。
@@ -38,8 +38,8 @@ Mac mini DHCP 地址需保持固定；nginx 由现有 Homebrew LaunchAgent 管�
 默认不生成交付包；需要明确授权发布/打包后才执行。构建产物先落在被忽略的 `Project/Windows/dist/build/`，只有 `Publish-LanUpdate.ps1` 把校验通过的安装包与清单归档到 `Release/Windows/<version>/`（不提交 Git）。发布目标只有 Mac mini 局域网：每次发布都会替换服务器上的 `versions/` 与清单指针，旧的版本目录需在发布时清理。签名私钥只在 Windows 发布用户下的 CNG；代码签名证书私钥仍在该发布环境，绝不能复制到 Mac mini。
 
 1. 在已授权的 Windows 发布环境构建并完成安装器 Authenticode 签名。`Build-Installer.ps1` 输出到 `Project/Windows/dist/build/`，默认要求传入 `-CertThumbprint`；签名证书 DER SHA-256 必须与 `UpdateSource.json` publisher pin 一致。只有显式加 `-AllowUnsignedTest` 才会生成未签名测试包，发布脚本会拒绝该包。
-2. 运行 `New-UpdateRecord.ps1`（输入与输出同样位于 `Project/Windows/dist/build/`），其 notes/download URL 使用固定 LAN base URL。核对安装包 SHA-256、大小、版本与 build。
-3. 使用 `Feige.UpdateTool sign` 为原始发布记录签名，输出到 `Project/Windows/dist/build/feige-windows-update.json`；签名私钥不得离开 CNG 发布环境。
+2. 运行 `New-UpdateRecord.ps1 -ProtocolVersion <本版最高协议号>`（输入与输出同样位于 `Project/Windows/dist/build/`），其 notes/download URL 使用固定 LAN base URL。核对安装包 SHA-256、大小、版本与 build。
+3. 使用 `Feige.UpdateTool sign <仓库根> <UpdateSource.json> feige-update-release-2026 feige-update-release-2026 <记录> <输出>` 为原始发布记录签名，输出到 `Project/Windows/dist/build/feige-windows-update.json`；签名私钥不得离开 CNG 发布环境。
 4. 使用 `Publish-LanUpdate.ps1 -ManifestPath <Project\\Windows\\dist\\build\\feige-windows-update.json> -WhatIf` 预览。真实发布需确认（`ConfirmImpact=High`）。脚本先把版本包上传到服务器临时目录，校验 SHA-256 后用同文件系统的目录重命名一次性提升为 `versions/<tag>`（不可覆盖），再从真实 HTTP 地址重新下载校验，最后原子替换清单指针并在成功后将安装包与清单归档到 `Release/Windows/<version>/`；替换前保留上一份指针为 `feige-windows-update.previous.json` 供手工回滚。若上次运行已在提升版本目录后失败，核对服务器后使用 `-ResumePointer` 复验现有文件并仅推进指针。`RemoteRoot` 固定为 `/usr/local/var/www/feige-updates`，`SshTarget` 只能是简单主机别名；Windows 发布用户需在 `~/.ssh/config` 中自备 `songli-macmini` 别名（MCP 的服务器配置不会自动同步到该机器）。
 5. 发布后从另一台局域网设备读取清单与包，按签名清单再次校验尺寸与 SHA-256，并在普通 Windows 用户账户验收更新检查/下载/安装、签名错误拒绝、网络中断及升级结果。
 
@@ -50,7 +50,7 @@ GitHub 来源与局域网来源共用同一份签名清单与同一批公钥、�
 - Release 资产需包含：安装包、清单 `feige-windows-update.json`，以及与清单一致的 `windows/stable/versions/<tag>/` 路径内容。GitHub 不支持在资产名中保留子目录，所以当前每次只发布清单（其中记录本版本的下载地址）。
 - 清单中的 `downloadUrl` / `notesUrl` 必须落在该来源的 `baseUri` 之下，否则清单会被拒绝——局域网清单指向内网地址，GitHub 清单指向 GitHub 地址，二者不能互换。
 - GitHub 下载会 302 跳转到 `release-assets.githubusercontent.com` / `objects.githubusercontent.com`；这两个主机必须列在 GitHub 来源的 `redirectHosts` 中，且只允许 HTTPS 443、无查询串。
-- 已发布的 `v1.2.1` Release 目前只含安装包与校验文件，尚未上传签名清单；2026-11-02 从 ROG 请求 latest-release 清单返回 HTTP 404。清单上传前，GitHub 来源会因 404 自动回退，不影响 LAN 来源。
+- 当前 Latest 为 `v1.3.0`（2026-11-03），与 `v1.2.1` 一样只含安装包与校验文件，没有签名清单，GitHub 来源会因 404 跳过，不影响 LAN 来源。不要把 LAN 清单直接上传：其下载地址不在 GitHub `baseUri` 下，客户端会判为失败且不再回退。macOS 版本另建非 Latest 的 Release（如 `macos-v0.5.0`），避免抢占 `latest/download`。
 
 ## 更安全的远程访问
 

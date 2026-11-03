@@ -15,6 +15,15 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-03 1.3.0 build 1306 正式发布
+
+- **构建与签名**：ROG 从 master `c6d68c4` 构建 x64、arm64 安装包，用证书 `EFD99E9E…`（CN=Songli，证书 SHA-256 与 `publisherCertificateSha256` 一致）签名并加时间戳。x64 68,111,632 字节，SHA-256 `B85F8941…264B495E`；arm64 65,435,424 字节，SHA-256 `8159FFC8…A44808D7`。sidecar `signed: true`，传到 Mac 后哈希一致。SSH 工具单次下载大文件会在约 23 MB 处中断，改为在 ROG 切成 15 MB 分块再拼接。
+- **更新清单**：`New-UpdateRecord.ps1`（tag `v1.3.0-b1306`）生成发布记录，CNG 密钥 `feige-update-release-2026` 签名；公钥与 `UpdateSource.json` 一致，`verify` 通过。
+- **局域网发布**：ROG 当前连不到 Mac mini，也没有 `songli-macmini` 别名，`Publish-LanUpdate.ps1` 无法在 ROG 运行。改由 Mac 按脚本同样的顺序上传：临时目录 → 哈希核对 → 改名为 `versions/v1.3.0-b1306` → HTTP 重新下载核对 → 备份并替换清单 → HTTP 核对清单。签名清单另存到 `Release/Windows/1.3.0/feige-windows-update.json`。
+- **GitHub**：Release `v1.3.0`（Latest）含两个安装包与 `FeigeSetup-1.3.0-b1306-SHA256SUMS.txt`，重新下载校验通过，`latest/download` 返回 200。未上传清单：清单的下载地址指向局域网，GitHub 来源返回这样的清单会被客户端判为失败且不回退。
+- **工具修复**：`Feige.UpdateTool sign` 的 ROOT 为仓库根，暂存目录改为 `Project/Windows/dist/build`（原先是重构前的 `Windows/dist/build`，本次发布临时把文件放到旧路径才完成签名）。`New-UpdateRecord.ps1` 新增必填 `-ProtocolVersion`（3–255），不再写死 3；本次发布在签名前把记录改为 6。`.gitignore` 补 `Project/Windows/dist/`。在 ROG 用 1.3.0 安装包验证：缺省或越界的协议号被拒绝，按新路径签名与 `verify` 通过，输出在暂存目录之外时拒绝。
+- **未完成**：干净机器安装、1.2.1 → 1.3.0 应用内升级、卸载均未在正式包上实测。
+
 ## 2026-11-03 身份密钥注册表副本与 1.3.0 发布准备
 
 - **身份副本**：`IdentityStore` 生成密钥时，除了写 `identity.pkcs8.dpapi`，还把同一份 DPAPI 保护数据写入 `HKCU\Software\Songli\FeigeTransfer\IdentityBackup`。文件不见了而副本还在时，从副本恢复文件并沿用原指纹；文件存在时以文件为准：没有副本（旧安装）或副本内容不一致时都用文件内容重写，重写失败不影响启动。隔离测试构建（`FEIGE_TEST_ISOLATION`）不读写真实副本。MSIX 的 HKCU 写入被系统虚拟化，卸载 MSIX 后副本随之消失，EXE 与 MSIX 之间不共享身份。

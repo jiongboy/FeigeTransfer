@@ -1,6 +1,6 @@
-# macOS 0.5.0 发布说明（草稿）
+# macOS 0.5.0 发布说明
 
-状态：**草稿，尚未打包**。正式打包时复制到 `Release/MacOS/0.5.0/`，并补上文件大小与 SHA-256。逐轮实现与验证见 [macOS 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
+状态：**已发布**（2026-11-03，build 16，已公证）。含文件大小与 SHA-256 的定稿在 `Release/MacOS/0.5.0/ReleaseNotes-0.5.0.md`，公开页面为 [GitHub macos-v0.5.0](https://github.com/jiongboy/FeigeTransfer/releases/tag/macos-v0.5.0)。逐轮实现与验证见 [macOS 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
 
 ## 新功能
 
