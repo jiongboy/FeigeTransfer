@@ -3,6 +3,13 @@
 > 只记录对双端或协作方式有影响的变更，按时间倒序排列。平台内部实现细节见各平台开发日志：
 > [macOS 开发日志](../MacOS/DevelopmentLog.md) · [Windows 开发日志](../Windows/DevelopmentLog.md)
 
+## 2026-11-03 Windows 1.3.2 与 macOS 0.5.2：表情崩溃、断开不再弹框
+
+- **Windows 点击表情崩溃**：`SendPage` 的表情面板把按钮直接放进 `WrapGrid`，而 WinUI 的 `WrapGrid` 只能作为 `ItemsControl` 的 `ItemsPanel`，面板首次布局时抛出 XAML 异常（事件日志 `Microsoft.UI.Xaml.dll`，`0xc000027b`）。改用可直接容纳子元素的 `VariableSizedWrapGrid`，布局参数不变。
+- **对方离线不再弹框**：对话中对方离线或断开时，macOS 原来弹出模态提示框，Windows 原来显示需要手动关闭的红色错误条。现在两端只更新连接状态，未完成的消息照常标为断开；macOS 发文件时因断开失败也不再弹框（`isConnectionLoss`），其他发送错误仍提示。
+- **版本**：Windows 1.3.2（build 1308，MSIX 备用清单 1.3.2.0），macOS 0.5.2（build 18）。协议与线格式不变，仍为 v6；Windows 更新清单 `protocolVersion` 仍为 3。
+- **验证**：Windows 在 Parallels 虚拟机构建通过（0 警告 0 错误）；macOS `swift build` 通过，`ModelTransferTests`、`ChatConnectionTests` 通过。未验证：表情面板与实际断开场景的人工点击。
+
 ## 2026-11-03 修正：Windows 客户端检查不到 1.3.0 / 1.3.1
 
 - 现象：Windows 客户端检查更新提示“当前系统、架构或安装渠道暂无兼容更新”。

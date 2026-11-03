@@ -4,6 +4,13 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-03：0.5.2：对方断开不再弹框
+
+- **原因**：会话读循环结束（对方离线、关闭应用或网络中断）时 `TransferModel` 设置 `errorMessage`，`ContentView` 的 `.alert` 因此弹出模态提示框。
+- **改动**：读循环 `catch` 不再设置 `errorMessage`，只调用 `disconnect(peerID:failureReason:preservePendingRequests:)`，会话状态与未完成消息照常更新。发文件失败时新增 `isConnectionLoss(_:)`（`ConnectionError.closed`、`NetworkTransportError`、`AuthenticatedStreamError` 的 `unexpectedEOF`/`timeout`/`cancelled`），属于断开时不弹框，其他错误仍弹出。
+- **版本**：`Info.plist` 0.5.2（build 18）。
+- **验证**：`swift build` 通过；`swift test --filter 'ModelTransferTests|ChatConnectionTests'` 9 项通过。未验证：实际断开场景的人工确认。
+
 ## 2026-11-03：0.5.1 build 17 正式发布
 
 - **打包与公证**：从 `c05a9e4` 运行 `FEIGE_NOTARY_PROFILE=feige-notary package-app.sh`，公证提交 `bd8e0413-45eb-4611-8739-c1ed6fd18036` 为 Accepted，已 staple；`spctl` 为 Notarized Developer ID，zip 解压后的应用同样通过；`Feige.icns` 与仓库主图标一致。`FeigeMac-0.5.1.zip` 3,444,813 字节，SHA-256 `3cdada2c…b767ddc`。

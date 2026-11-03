@@ -15,6 +15,13 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-03 1.3.2：表情面板崩溃、断开改为状态提示
+
+- **表情崩溃**：点击“表情”即退出，事件日志为 `Microsoft.UI.Xaml.dll` stowed exception `0xc000027b`。`SendPage.CreateEmojiFlyout` 用 `new WrapGrid` 直接 `Children.Add` 按钮，`WrapGrid` 只能作 `ItemsPanel`，弹出时布局抛异常。改为 `VariableSizedWrapGrid`（同样的 `Orientation`、`MaximumRowsOrColumns`、`ItemWidth/ItemHeight`）。设置页、引导页头像选择的 `ItemsWrapGrid` 在 `ItemsPanel` 内，不受影响。
+- **断开提示**：`AppSession.RunConnectionAsync`（v3、v4）读循环异常时原来调用 `Fail("连接已中断：…")`，在发送页显示红色错误条且不会自动消失；现在记录 `AppLog` 后只 `Publish("连接已断开")`，`FinishConnectionAsync` 仍把进行中的消息标为“连接已断开。”。
+- **版本**：`Feige.App.csproj` 1.3.2，`Package.appxmanifest` 1.3.2.0；安装包 build 1308。
+- **验证**：Parallels 虚拟机从当前工作区构建 `Feige.App`（Debug x64）0 警告 0 错误。未验证：安装后点击表情、实际断开连接。
+
 ## 2026-11-03 修正更新清单 protocolVersion（6 → 3）
 
 - **现象**：1.3.0 测试安装（arm64）检查更新返回 `NoCompatibleUpdate`（“当前系统、架构或安装渠道暂无兼容更新”）。
