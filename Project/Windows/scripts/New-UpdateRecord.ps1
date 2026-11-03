@@ -2,13 +2,15 @@
 .SYNOPSIS
   Create an unsigned release record from final, already built/signed EXE packages under Project/Windows/dist/build.
 .PARAMETER ProtocolVersion
-  Highest communication protocol the packaged build speaks. Required so a release never inherits a stale value.
+  Update-compatibility key, not the LAN communication protocol. Every shipped Windows client builds its
+  UpdateTarget with the default 3 and only accepts releases with an exactly equal value, so any other
+  value hides the release from all installed clients. Change it only together with a client release.
 .NOTES
   Generates release metadata only after packaging is authorized; never builds or uploads a package.
 #>
 [CmdletBinding()]
 param([Parameter(Mandatory)][string[]]$InstallerPath, [Parameter(Mandatory)][string]$Tag,
-    [Parameter(Mandatory)][string]$SummaryFile, [Parameter(Mandatory)][ValidateRange(3, 255)][int]$ProtocolVersion,
+    [Parameter(Mandatory)][string]$SummaryFile, [ValidateSet(3)][int]$ProtocolVersion = 3,
     [string]$MinimumSystemVersion = '10.0.17763.0')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest

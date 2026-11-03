@@ -15,6 +15,13 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-03 修正更新清单 protocolVersion（6 → 3）
+
+- **现象**：1.3.0 测试安装（arm64）检查更新返回 `NoCompatibleUpdate`（“当前系统、架构或安装渠道暂无兼容更新”）。
+- **原因**：`AppUpdates.cs` 构造 `UpdateTarget` 时不传 `ProtocolVersion`，取默认 3；`UpdateManifest.Select` 要求 `r.ProtocolVersion == target.ProtocolVersion`。1.3.0 发布时把该字段当作局域网协议号改成 6，因此 1.3.0、1.3.1 两份清单对所有已发布客户端都不可见。
+- **处理**：在 ROG 用原安装包重新生成 `protocolVersion` 3 的记录并以 `feige-update-release-2026` 签名，Mac 上 `Feige.UpdateTool verify` 通过后替换线上清单；6 版清单在服务器上留作 `feige-windows-update.1.3.1-pv6.json`。虚拟机内读取线上清单确认 x64、arm64 均为 1.3.1 b1307 / protocolVersion 3。`New-UpdateRecord.ps1` 的 `-ProtocolVersion` 改为 `ValidateSet(3)`、默认 3，并在帮助里说明含义。`Release/Windows/1.3.1/feige-windows-update.json` 换成 3 版，6 版留作 `feige-windows-update-pv6.json`；`Release/Windows/1.3.0/` 里的 6 版清单为历史文件，未改。
+- **未完成**：虚拟机内应用尚未在修复后重新点“检查更新”并完成升级。
+
 ## 2026-11-03 1.3.1 build 1307 正式发布
 
 - **构建与签名**：提交以 git bundle 传到 ROG（不经 GitHub），从 `c05a9e4` 构建 x64、arm64，用证书 `EFD99E9E…` 签名并加 DigiCert 时间戳。x64 68,131,960 字节，SHA-256 `299A2508…5B20D3E14`；arm64 65,465,096 字节，SHA-256 `5BB3219D…C00AE38D`。sidecar `signed: true`；15 MB 分块传到 Mac 后哈希一致。`Get-AuthenticodeSignature` 为 UnknownError（自签名证书基本约束提示），与 1.3.0 相同。

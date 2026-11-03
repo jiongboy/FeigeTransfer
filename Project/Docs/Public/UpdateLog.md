@@ -3,6 +3,12 @@
 > 只记录对双端或协作方式有影响的变更，按时间倒序排列。平台内部实现细节见各平台开发日志：
 > [macOS 开发日志](../MacOS/DevelopmentLog.md) · [Windows 开发日志](../Windows/DevelopmentLog.md)
 
+## 2026-11-03 修正：Windows 客户端检查不到 1.3.0 / 1.3.1
+
+- 现象：Windows 客户端检查更新提示“当前系统、架构或安装渠道暂无兼容更新”。
+- 原因：1.3.0 发布时把 `New-UpdateRecord.ps1` 的 `protocolVersion` 当成局域网协议号改为 6，但该字段是更新兼容键，所有已发布的 Windows 客户端（1.2.x、1.3.0）都只接受值为 3 的条目，因此 1.3.0 和 1.3.1 清单对所有 Windows 客户端都不可见。macOS 客户端不校验该字段，不受影响。
+- 处理：用 `protocolVersion` 3 重新签名 1.3.1 清单（安装包不变），`verify` 通过后替换 Mac mini 上的线上清单；原 6 版清单在服务器上备份为 `feige-windows-update.1.3.1-pv6.json`，`*.previous.json` 仍为 1.3.0。`New-UpdateRecord.ps1` 改为固定 3（`ValidateSet(3)`），`UpdateService.md` 同步说明。下文 1.3.0 / 1.3.1 两条中“`protocolVersion` 均为 6”的 Windows 部分以本条为准。
+
 ## 2026-11-03 正式发布 Windows 1.3.1 与 macOS 0.5.1
 
 - 从 master `c05a9e4` 构建。Windows 1.3.1 build 1307 在 ROG 用发布证书签名（x64、arm64，带时间戳）；macOS 0.5.1 build 17 用 Developer ID 签名并经 Apple 公证（Accepted，已 staple）。交付物、校验文件、签名清单和发布说明位于 `Release/Windows/1.3.1/` 与 `Release/MacOS/0.5.1/`。
