@@ -56,13 +56,6 @@
                                 <StackPanel x:Name="MemberPanel" Spacing="7"/>
                             </ScrollViewer>
                             <Button x:Name="AddMemberButton" Content="添加成员" Click="OnAddMemberClick" IsEnabled="False"/>
-                            <TextBlock x:Name="AddMemberExplanation" Text="受邀设备需要接受邀请；成员只有在所有成员确认并提交名单事务后才正式加入。" FontSize="11" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed"/>
-                            <ListView x:Name="AvailableMemberList" SelectionMode="Multiple" MaxHeight="180" Visibility="Collapsed"/>
-                            <TextBlock x:Name="AvailableMembersEmpty" Text="没有可添加的已连接设备。" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed"/>
-                            <StackPanel x:Name="AddMemberActions" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
-                                <Button Content="邀请所选" Click="OnApplyAddMembersClick" Style="{StaticResource AccentButtonStyle}"/>
-                                <Button Content="取消" Click="OnCancelAddMembersClick"/>
-                            </StackPanel>
                         </StackPanel>
                     </Border>
                 </Grid>

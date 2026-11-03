@@ -11,9 +11,37 @@ final class UnicastProbeTests: XCTestCase {
         XCTAssertEqual(ProbeTargets.hosts(in: "172.16.1.4/31"), [0xAC10_0104, 0xAC10_0105])
         XCTAssertEqual(ProbeTargets.hosts(in: "169.254.1.1/32")?.count, 1)
         for invalid in ["8.8.8.8", "127.0.0.1", "172.32.0.1", "10.0.0.0/23", "10.0.0.0/33", "10.0.0.0/", "010.0.0.1",
-                        "10.0.0", "10.0.0.256", "host.local", "", "fe80::1"] {
+                        "10.0", "10.0.", "8.8.8", "10.0.0.256", "host.local", "", "fe80::1"] {
             XCTAssertNil(ProbeTargets.hosts(in: invalid), invalid)
         }
+    }
+
+    func testThreeOctetShorthandMeansTheWhole24() {
+        XCTAssertEqual(ProbeTargets.normalized(" 10.80.1 "), "10.80.1.0/24")
+        XCTAssertEqual(ProbeTargets.normalized("10.80.1.5"), "10.80.1.5")
+        XCTAssertEqual(ProbeTargets.normalized("10.80.1.0/28"), "10.80.1.0/28")
+        XCTAssertEqual(ProbeTargets.hosts(in: "10.80.1"), ProbeTargets.hosts(in: "10.80.1.0/24"))
+        XCTAssertNil(ProbeTargets.hosts(in: "10.80.1/24"))
+    }
+
+    func testCompanySubnetsApplyOnlyOnTheCompanyNetwork() {
+        let office: UInt32 = 0x0A50_1E19, home: UInt32 = 0xC0A8_0105   // 10.80.30.25, 192.168.1.5
+        XCTAssertEqual(ProbeTargets.automatic(for: [home, office]), ProbeTargets.company)
+        XCTAssertEqual(ProbeTargets.automatic(for: [home, 0x0A51_0001]), [])   // 10.81.0.1
+        XCTAssertEqual(ProbeTargets.roundHosts(saved: [], localAddresses: [home]), [])
+        XCTAssertEqual(ProbeTargets.roundHosts(saved: [], localAddresses: [office]).count, 508)
+        // A saved duplicate (in shorthand) is probed once; saved targets survive when the company ones do not fit.
+        XCTAssertEqual(ProbeTargets.roundHosts(saved: ["10.80.1", "192.168.1.9"], localAddresses: [office]).count, 509)
+        let full = (0..<16).map { "192.168.\($0).0/24" }
+        XCTAssertEqual(ProbeTargets.roundHosts(saved: full, localAddresses: [office]), ProbeTargets.hosts(in: full))
+        for target in ProbeTargets.company { XCTAssertEqual(ProbeTargets.hosts(in: target)?.count, 254) }
+    }
+
+    func testCommonTargetsAreDistinctValid24sThatFitTheLimits() {
+        let targets = ProbeTargets.common.map(\.target)
+        XCTAssertEqual(Set(targets).count, targets.count)
+        for target in targets { XCTAssertEqual(ProbeTargets.hosts(in: target)?.count, 254, target) }
+        XCTAssertNotNil(ProbeTargets.hosts(in: targets))
     }
 
     func testTargetListDeduplicatesAndEnforcesEntryLimit() {

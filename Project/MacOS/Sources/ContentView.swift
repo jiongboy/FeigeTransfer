@@ -134,7 +134,9 @@ struct ContentView: View {
             SendView { device in pendingDevice = device; showManualConnection = false }.environmentObject(model)
         }
         .sheet(isPresented: $showNewGroup) {
-            NewGroupSheet(peers: model.groupEligiblePeers) { name, peerIDs in
+            GroupMemberPickerSheet(mode: .create, existingMemberCount: 1,
+                                   candidates: model.groupMemberPickerCandidates(for: nil),
+                                   onConfirm: { name, peerIDs in
                 Task {
                     do {
                         let id = try await model.createGroup(name: name, memberPeerIDs: peerIDs)
@@ -150,7 +152,7 @@ struct ContentView: View {
                         }
                     }
                 }
-            }
+            }, onCancel: { showNewGroup = false })
         }
         .sheet(isPresented: $showHistory) { historySheet }
         .sheet(isPresented: Binding(get: { !model.pendingGroupFileApprovals.isEmpty }, set: { _ in })) {
@@ -785,46 +787,6 @@ struct ContentView: View {
                 }
             }
         }.padding(24).frame(width: 680, height: 480)
-    }
-}
-
-private struct NewGroupSheet: View {
-    let peers: [ChatPeer]
-    let onCreate: (String, [String]) -> Void
-    @State private var name = "新群聊"
-    @State private var selected: Set<String> = []
-
-    private var canCreate: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !selected.isEmpty && selected.count < GroupConversation.maximumMemberCount
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("创建群聊").font(.title2.bold())
-            TextField("群名称", text: $name).textFieldStyle(.roundedBorder)
-            Text("选择已通过 v4 连接的设备。每台设备需要分别接受邀请，创建后最多 20 位成员（含本机）。")
-                .font(.caption).foregroundStyle(.secondary)
-            List(peers) { peer in
-                Toggle(isOn: Binding(
-                    get: { selected.contains(peer.id) },
-                    set: { value in
-                        if value { selected.insert(peer.id) } else { selected.remove(peer.id) }
-                    }
-                )) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(peer.name)
-                        Text(peer.id).font(.caption2.monospaced()).foregroundStyle(.secondary)
-                    }
-                }
-            }.frame(minHeight: 180)
-            HStack {
-                Text("已选 \(selected.count) 位成员").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("创建并邀请") { onCreate(name, Array(selected)) }
-                    .buttonStyle(.borderedProminent).disabled(!canCreate)
-            }
-        }.padding(22).frame(width: 500, height: 440)
     }
 }
 

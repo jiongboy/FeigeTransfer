@@ -140,8 +140,8 @@ final class LANService {
 
     private func startProbe(txtValues: [String: String], port: UInt16, targets: [String], allowsProbes: Bool, token: UUID) {
         guard probe == nil, let name = txtValues["name"], let fingerprint = txtValues["fp"], let capabilities = txtValues["caps"] else { return }
-        let hosts = ProbeTargets.hosts(in: targets) ?? []
-        guard allowsProbes || !hosts.isEmpty else { return }
+        guard allowsProbes || !ProbeTargets.roundHosts(saved: targets, localAddresses: ProbeTargets.localIPv4Addresses()).isEmpty
+        else { return }
         let advertisement = UnicastProbe.Advertisement(name: name, fingerprint: fingerprint, capabilities: capabilities,
                                                        port: port, avatarId: txtValues["avatar"])
         let probe = UnicastProbe(advertisement: advertisement, respondsToProbes: allowsProbes) { [weak self] peer in
@@ -156,11 +156,14 @@ final class LANService {
         }
         self.probe = probe
         if allowsProbes && !probe.canRespond { onProbePortUnavailable?() }
-        guard !hosts.isEmpty else { return }
         probeTask = Task { [weak self] in
             while !Task.isCancelled {
-                await withCheckedContinuation { continuation in
-                    probe.scan(hosts: hosts) { continuation.resume() }
+                // Recomputed each round: a laptop joining or leaving the company network starts or stops the company subnets.
+                let hosts = ProbeTargets.roundHosts(saved: targets, localAddresses: ProbeTargets.localIPv4Addresses())
+                if !hosts.isEmpty {
+                    await withCheckedContinuation { continuation in
+                        probe.scan(hosts: hosts) { continuation.resume() }
+                    }
                 }
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled else { return }

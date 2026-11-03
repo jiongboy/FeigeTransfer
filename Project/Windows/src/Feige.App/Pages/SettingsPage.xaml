@@ -127,10 +127,17 @@
             <Border Style="{StaticResource FeigeSectionCardStyle}">
                 <StackPanel Spacing="12">
                     <TextBlock Text="其他网段" FontSize="15" FontWeight="SemiBold" />
-                    <TextBlock Text="对方在其他网段时自动发现不可用，可在此保存对方地址或网段，例如 192.168.60.12 或 192.168.60.0/24。一行一项，最多 16 项。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Text="对方在其他网段时自动发现不可用，可在此保存对方地址或网段，例如 192.168.60.12、192.168.60（整个网段）或 192.168.60.0/24。一行一项，最多 16 项。" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <TextBox x:Name="ProbeTargetsBox" AcceptsReturn="True" TextWrapping="NoWrap" MinHeight="72" FontFamily="Consolas" AutomationProperties.Name="其他网段，一行一项" />
                     <ToggleSwitch x:Name="AllowsProbesSwitch" Header="允许其他网段发现本机" OnContent="开启" OffContent="关闭" />
-                    <Button x:Name="SaveProbeTargetsButton" Content="保存网段" Click="OnSaveProbeTargetsClick" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="SaveProbeTargetsButton" Content="保存网段" Click="OnSaveProbeTargetsClick" />
+                        <DropDownButton Content="添加常用网段" AutomationProperties.Name="添加常用网段">
+                            <DropDownButton.Flyout>
+                                <MenuFlyout x:Name="CommonProbeTargetsFlyout" Placement="Bottom" Opening="OnCommonProbeTargetsOpening" />
+                            </DropDownButton.Flyout>
+                        </DropDownButton>
+                    </StackPanel>
                     <TextBlock x:Name="ProbeHintText" FontSize="12" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     <InfoBar x:Name="ProbeTargetsBar" IsOpen="False" Severity="Error" />
                 </StackPanel>

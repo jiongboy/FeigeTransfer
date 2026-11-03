@@ -1,4 +1,5 @@
 import Combine
+import FeigeIdentity
 import SwiftUI
 
 /// First-run guide (two pages) and the preferences window, matching the Windows settings cards:
@@ -177,7 +178,7 @@ struct SetupView: View {
     }
 
     private var networkCard: some View {
-        Card(title: "其他网段", subtitle: "对方在其他网段时自动发现不可用，可在此保存对方地址或网段，例如 192.168.60.12 或 192.168.60.0/24。") {
+        Card(title: "其他网段", subtitle: "对方在其他网段时自动发现不可用，可在此保存对方地址或网段，例如 192.168.60.12、192.168.60（整个网段）或 192.168.60.0/24。") {
             TextEditor(text: $probeTargetsText)
                 .font(.system(size: 12, design: .monospaced))
                 .frame(height: 64)
@@ -188,14 +189,27 @@ struct SetupView: View {
                 Button("保存网段") {
                     do {
                         try model.saveProbeSettings(targets: probeTargetsText.components(separatedBy: .newlines), allowsProbes: allowsProbes)
+                        probeTargetsText = model.settings.probeTargets.joined(separator: "\n")
                         probeSettingsError = nil
                     } catch { probeSettingsError = error.localizedDescription }
                 }
+                Menu("添加常用网段") {
+                    let entered = Set(probeTargetsText.components(separatedBy: .newlines).map(ProbeTargets.normalized))
+                    ForEach(ProbeTargets.common, id: \.target) { item in
+                        Button("\(item.target)　\(item.note)") { addProbeTarget(item.target) }
+                            .disabled(entered.contains(item.target))
+                    }
+                }
+                .fixedSize()
                 if let probeSettingsError {
                     Text(probeSettingsError).font(.system(size: 11)).foregroundStyle(.red)
                 }
             }
-            Text(model.probePortUnavailable ? "端口 52526 被占用，其他网段暂时无法发现本机，本机仍可探测对方。"
+            if !ProbeTargets.automatic(for: ProbeTargets.localIPv4Addresses()).isEmpty {
+                Text("当前在公司网络（10.80.x），已自动探测 \(ProbeTargets.company.joined(separator: "、"))，无需填写。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(model.probePortUnavailable ?"端口 52526 被占用，其他网段暂时无法发现本机，本机仍可探测对方。"
                                             : "一行一项，最多 16 项。对方防火墙需放行 UDP 52526 和应用的 TCP 端口；应用不会替你修改防火墙。")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
@@ -203,6 +217,12 @@ struct SetupView: View {
             probeTargetsText = model.settings.probeTargets.joined(separator: "\n")
             allowsProbes = model.settings.allowsProbes
         }
+    }
+
+    /// Appends `target` as a new line; it takes effect only after the user saves.
+    private func addProbeTarget(_ target: String) {
+        let trimmed = probeTargetsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        probeTargetsText = trimmed.isEmpty ? target : trimmed + "\n" + target
     }
 
     private var connectionStatus: String {

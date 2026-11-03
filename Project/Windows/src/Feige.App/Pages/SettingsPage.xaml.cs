@@ -1,4 +1,5 @@
 using Feige.App.Services;
+using Feige.Core.Discovery;
 using Feige.Core.Storage;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -138,9 +139,33 @@ public sealed partial class SettingsPage : Page
     }
 
     private async void OnUsageHelpClick(object sender, RoutedEventArgs e) => await ConnectionHelp.ShowAsync();
-    private void RefreshProbeHint() => ProbeHintText.Text = AppSession.Current.ProbePortUnavailable
-        ? "UDP 端口 52526 被占用，其他网段暂时无法发现本机，本机仍可探测对方。"
-        : "对方防火墙需放行 UDP 52526 和应用的 TCP 端口；应用不会替你修改防火墙。";
+    private void RefreshProbeHint()
+    {
+        string hint = AppSession.Current.ProbePortUnavailable
+            ? "UDP 端口 52526 被占用，其他网段暂时无法发现本机，本机仍可探测对方。"
+            : "对方防火墙需放行 UDP 52526 和应用的 TCP 端口；应用不会替你修改防火墙。";
+        if (ProbeTargets.Automatic(FeigeService.LocalAddresses()).Count > 0)
+            hint = $"当前在公司网络（10.80.x），已自动探测 {string.Join("、", ProbeTargets.Company)}，无需填写。\n" + hint;
+        ProbeHintText.Text = hint;
+    }
+
+    /// <summary>Lists the router defaults; entries already typed are disabled. Picking one only edits the text box until saved.</summary>
+    private void OnCommonProbeTargetsOpening(object sender, object e)
+    {
+        var entered = ProbeTargetsBox.Text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(ProbeTargets.Normalize).ToHashSet();
+        CommonProbeTargetsFlyout.Items.Clear();
+        foreach (var (target, note) in ProbeTargets.Common)
+        {
+            var item = new MenuFlyoutItem { Text = $"{target}　{note}", IsEnabled = !entered.Contains(target) };
+            item.Click += (_, _) =>
+            {
+                string text = ProbeTargetsBox.Text.Trim();
+                ProbeTargetsBox.Text = text.Length == 0 ? target : text + Environment.NewLine + target;
+            };
+            CommonProbeTargetsFlyout.Items.Add(item);
+        }
+    }
 
     private async void OnSaveProbeTargetsClick(object sender, RoutedEventArgs e)
     {
@@ -149,6 +174,7 @@ public sealed partial class SettingsPage : Page
         {
             string[] lines = ProbeTargetsBox.Text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             await AppSession.Current.SaveProbeSettingsAsync(lines, AllowsProbesSwitch.IsOn);
+            ProbeTargetsBox.Text = string.Join(Environment.NewLine, AppSession.Current.Settings.ProbeTargets);
             ProbeTargetsBar.IsOpen = false;
             RefreshProbeHint();
         }

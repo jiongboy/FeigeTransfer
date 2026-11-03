@@ -18,7 +18,6 @@ public sealed partial class GroupsPage : Page
     private V4GroupAppService? _observedService;
     private bool _refreshing;
     private bool _suppressSelectionChanged;
-    private bool _isChoosingMembers;
     private bool _membershipChangeInFlight;
     private bool _showGroupListInNarrow;
     private bool _showMembersInNarrow;
@@ -30,7 +29,6 @@ public sealed partial class GroupsPage : Page
         NavigationCacheMode = NavigationCacheMode.Required;
         GroupList.ItemsSource = AppSession.Current.Groups?.Groups;
         GroupList.ItemTemplate = GroupTemplate();
-        AvailableMemberList.ItemTemplate = PeerTemplate();
         MessageList.ItemsSource = null;
         Loaded += (_, _) => RefreshResponsiveLayout(Root.ActualWidth);
     }
@@ -228,10 +226,6 @@ public sealed partial class GroupsPage : Page
             AddMemberButton.IsEnabled = false;
             LeaveButton.IsEnabled = false;
             PickFileButton.IsEnabled = false;
-            AvailableMemberList.Visibility = Visibility.Collapsed;
-            AddMemberExplanation.Visibility = Visibility.Collapsed;
-            AvailableMembersEmpty.Visibility = Visibility.Collapsed;
-            AddMemberActions.Visibility = Visibility.Collapsed;
             Composer.IsEnabled = false;
             SendButton.IsEnabled = false;
         }
@@ -273,7 +267,6 @@ public sealed partial class GroupsPage : Page
         }
         if (_selected?.Id != selected?.Id)
         {
-            _isChoosingMembers = false;
             _showGroupListInNarrow = false;
             _showMembersInNarrow = false;
             MemberSearch.Text = "";
@@ -287,7 +280,6 @@ public sealed partial class GroupsPage : Page
     private void OnGroupItemClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is not GroupConversation group) return;
-        _isChoosingMembers = false;
         _showGroupListInNarrow = false;
         _showMembersInNarrow = false;
         _selected = group;
@@ -324,18 +316,20 @@ public sealed partial class GroupsPage : Page
         if (visibleMembers.Length == 0)
             MemberPanel.Children.Add(new TextBlock { Text = "没有匹配的成员。", FontSize = 12, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] });
 
-        AddMemberButton.IsEnabled = owner && group.Members.Count < GroupConversation.MaximumMembers && allMembersOnline && !hasPendingTransaction;
+        AddMemberButton.Visibility = owner ? Visibility.Visible : Visibility.Collapsed;
+        AddMemberButton.IsEnabled = owner && !_membershipChangeInFlight;
         LeaveButton.Content = owner ? (group.Members.Count == 1 ? "结束群聊" : "退出并转让群主") : "申请退出群聊";
         LeaveButton.IsEnabled = localMember && !hasPendingTransaction &&
             (owner ? allMembersOnline : (Service.IsPeerConnected(group.OwnerFingerprint) && !_leaveRequestsInFlight.Contains(group.Id)));
         PickFileButton.IsEnabled = localMember && group.Members.Any(member => member.Fingerprint != localFingerprint && Service.IsPeerConnected(member.Fingerprint));
         Composer.IsEnabled = localMember && hasRemoteMember;
         SendButton.IsEnabled = localMember && hasRemoteMember;
-        MemberConstraint.Text = allMembersOnline
-            ? "成员名单变更需要所有成员在线并明确确认；群聊最多 20 人（含本机）。"
-            : "有成员离线。添加或移除成员、群主转让暂不可用；请等待自动重连后再操作。";
+        MemberConstraint.Text = !allMembersOnline
+            ? "有成员离线。添加或移除成员、群主转让暂不可用；请等待自动重连后再操作。"
+            : group.Members.Count >= GroupConversation.MaximumMembers
+                ? "群聊已达到 20 人上限；如需添加成员，请先移除一位成员。"
+                : "成员名单变更需要所有成员在线并明确确认；群聊最多 20 人（含本机）。";
         MessageList.ItemsSource = Service.Messages.Where(m => m.GroupID == group.Id).OrderBy(m => m.Date).Select(BuildMessageRow).ToArray();
-        RefreshAvailableMembers(group, allMembersOnline, hasPendingTransaction);
     }
 
     private StackPanel BuildMemberRow(GroupConversation group, GroupMember member, bool owner, bool allMembersOnline, bool hasPendingTransaction)
@@ -366,28 +360,6 @@ public sealed partial class GroupsPage : Page
             row.Children.Add(remove);
         }
         return new StackPanel { Children = { row } };
-    }
-
-    private void RefreshAvailableMembers(GroupConversation group, bool allMembersOnline, bool hasPendingTransaction)
-    {
-        var candidates = AppSession.Current.Conversations.Where(IsEligibleConversation)
-            .Where(conversation => !group.Members.Any(member => member.Fingerprint == conversation.Fingerprint))
-            .Where(conversation => string.IsNullOrWhiteSpace(MemberSearch.Text) ||
-                conversation.Name.Contains(MemberSearch.Text, StringComparison.CurrentCultureIgnoreCase) ||
-                conversation.Fingerprint.Contains(MemberSearch.Text, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        AvailableMemberList.ItemsSource = candidates;
-        AvailableMemberList.Visibility = _isChoosingMembers && candidates.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-        AddMemberExplanation.Visibility = _isChoosingMembers && group.OwnerFingerprint == AppSession.Current.Identity?.Fingerprint ? Visibility.Visible : Visibility.Collapsed;
-        AvailableMembersEmpty.Visibility = _isChoosingMembers && candidates.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        AddMemberActions.Visibility = _isChoosingMembers ? Visibility.Visible : Visibility.Collapsed;
-        AddMemberButton.IsEnabled = !_isChoosingMembers && group.OwnerFingerprint == AppSession.Current.Identity?.Fingerprint &&
-            group.Members.Count < GroupConversation.MaximumMembers && allMembersOnline && !hasPendingTransaction && candidates.Length > 0 && !_membershipChangeInFlight;
-        MemberConstraint.Text = !allMembersOnline
-            ? "有成员离线。添加或移除成员、群主转让暂不可用；请等待自动重连后再操作。"
-            : group.Members.Count >= GroupConversation.MaximumMembers
-                ? "群聊已达到 20 人上限；如需添加成员，请先移除一位成员。"
-                : "成员名单变更需要所有成员在线并明确确认；群聊最多 20 人（含本机）。";
     }
 
     private async void OnMemberSearchChanged(object sender, TextChangedEventArgs e)
@@ -486,24 +458,49 @@ public sealed partial class GroupsPage : Page
 
     private async void OnCreateClick(object sender, RoutedEventArgs e)
     {
-        var candidates = AppSession.Current.Conversations.Where(IsEligibleConversation).ToArray();
-        if (candidates.Length == 0) { SetStatus("没有已连接的 v4 设备可加入群组。", InfoBarSeverity.Warning); return; }
-        var name = new TextBox { Header = "群组名称", Text = "新群组", MaxLength = 80 };
-        var peers = new ListView { SelectionMode = ListViewSelectionMode.Multiple, MaxHeight = 280, ItemsSource = candidates };
-        peers.ItemTemplate = PeerTemplate();
-        var form = new StackPanel { Spacing = 10 }; form.Children.Add(name); form.Children.Add(new TextBlock { Text = "仅显示当前已有 v4 连接的设备；本机计入 20 人上限，最多选择 19 台。" }); form.Children.Add(peers);
-        var dialog = new ContentDialog { Title = "创建群组", Content = form, PrimaryButtonText = "创建并邀请", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary };
-        if (await UiPromptService.Current.ShowAsync(dialog) != ContentDialogResult.Primary) return;
+        if (!AppSession.Current.Conversations.Any(IsEligibleConversation)) { SetStatus("没有已连接的 v4 设备可加入群组。", InfoBarSeverity.Warning); return; }
+        var result = await GroupMemberPickerDialog.ShowAsync(null, 1, PickerCandidates(null));
+        if (result is not { } picked) return;
         try
         {
-            var selected = peers.SelectedItems.OfType<ConversationItem>().Where(IsEligibleConversation).Select(c => new GroupMember(c.Fingerprint, c.Name)).ToArray();
+            var selected = picked.Selected.Where(c => Service?.IsPeerConnected(c.Fingerprint) == true)
+                .Select(c => new GroupMember(c.Fingerprint, c.Name)).ToArray();
             if (selected.Length == 0) throw new InvalidOperationException("至少选择一台已连接的 v4 设备。");
             if (selected.Length > GroupConversation.MaximumMembers - 1) throw new InvalidOperationException("群组最多 20 人，包含本机；请最多选择 19 台设备。");
-            await Service!.CreateGroupAsync(name.Text, selected);
+            await Service!.CreateGroupAsync(picked.Name, selected);
             SetStatus("群组已创建，成员事务已完成。", InfoBarSeverity.Success);
         }
         catch (Exception ex) { SetStatus("群组创建失败或尚未确认完成；若事务已写入，会保留在群组/事务状态中：" + ErrorText.Describe(ex), InfoBarSeverity.Error); }
         Refresh();
+    }
+
+    /// <summary>Conversation devices for the picker; members of <paramref name="group"/> other than this device are listed as already in it.</summary>
+    private GroupMemberPickerCandidate[] PickerCandidates(GroupConversation? group)
+    {
+        string? localFingerprint = AppSession.Current.Identity?.Fingerprint;
+        var members = group?.Members ?? [];
+        var candidates = AppSession.Current.Conversations
+            .Where(c => !string.IsNullOrWhiteSpace(c.Fingerprint) && !members.Any(m => m.Fingerprint == c.Fingerprint))
+            .Select(c => new GroupMemberPickerCandidate(c.Fingerprint, c.Name, IsEligibleConversation(c)
+                ? GroupMemberPickerAvailability.Available : GroupMemberPickerAvailability.NotConnected));
+        var existing = members.Where(m => m.Fingerprint != localFingerprint)
+            .Select(m => new GroupMemberPickerCandidate(m.Fingerprint, m.DisplayName ?? "未知设备", GroupMemberPickerAvailability.ExistingMember));
+        return candidates.Concat(existing).ToArray();
+    }
+
+    /// <summary>Why the roster of <paramref name="group"/> cannot change right now, or null when the owner may invite.</summary>
+    private string? AddMemberBlockingReason(GroupConversation group)
+    {
+        if (Service is null) return "群组服务不可用";
+        if (_membershipChangeInFlight || Service.Operations.Any(op => op.GroupID == group.Id && op.Pending) ||
+            Service.Store.PendingMembershipPrepares.Any(prepare => prepare.GroupID == group.Id))
+            return "成员变更待处理，完成后再添加";
+        string? localFingerprint = AppSession.Current.Identity?.Fingerprint;
+        var offline = group.Members.Where(m => m.Fingerprint != localFingerprint && !Service.IsPeerConnected(m.Fingerprint))
+            .Select(m => m.DisplayName ?? "未知设备").ToArray();
+        if (offline.Length > 0) return $"成员 {string.Join("、", offline)} 离线";
+        if (group.Members.Count >= GroupConversation.MaximumMembers) return $"群聊已达到 {GroupConversation.MaximumMembers} 人上限";
+        return null;
     }
 
     private DataTemplate GroupTemplate()
@@ -512,52 +509,23 @@ public sealed partial class GroupsPage : Page
         return (DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load(xaml);
     }
 
-    private DataTemplate PeerTemplate()
-    {
-        var xaml = "<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><StackPanel Orientation='Horizontal' Spacing='9' Padding='8,6'><Image Source='{Binding AvatarImage}' Width='34' Height='34' Stretch='UniformToFill'/><StackPanel VerticalAlignment='Center'><TextBlock Text='{Binding Name}' FontWeight='SemiBold'/><TextBlock Text='已连接，可邀请' FontSize='10' Foreground='{ThemeResource TextFillColorSecondaryBrush}'/></StackPanel></StackPanel></DataTemplate>";
-        return (DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load(xaml);
-    }
-
-    private void OnAddMemberClick(object sender, RoutedEventArgs e)
-    {
-        if (_selected is null) return;
-        _isChoosingMembers = true;
-        RefreshSelection();
-        if (AvailableMemberList.Items.Count == 0)
-        {
-            _isChoosingMembers = false;
-            RefreshSelection();
-            SetStatus("没有可添加的已连接设备。", InfoBarSeverity.Warning);
-        }
-    }
-
-    private void OnCancelAddMembersClick(object sender, RoutedEventArgs e)
-    {
-        _isChoosingMembers = false;
-        AvailableMemberList.SelectedItems.Clear();
-        if (_selected is not null) RefreshSelection();
-    }
-
-    private async void OnApplyAddMembersClick(object sender, RoutedEventArgs e)
+    private async void OnAddMemberClick(object sender, RoutedEventArgs e)
     {
         if (_selected is null || Service is null || _membershipChangeInFlight) return;
         var group = _selected;
-        var selected = AvailableMemberList.SelectedItems.OfType<ConversationItem>().Where(IsEligibleConversation).ToArray();
-        if (selected.Length == 0) { SetStatus("请选择至少一台已连接设备。", InfoBarSeverity.Warning); return; }
+        var result = await GroupMemberPickerDialog.ShowAsync(group.Name, group.Members.Count, PickerCandidates(group),
+            () => AddMemberBlockingReason(group));
+        if (result is not { } picked) return;
+        if (AddMemberBlockingReason(group) is { } reason) { SetStatus(reason + "；成员名单变更暂不可用。", InfoBarSeverity.Warning); RefreshSelection(); return; }
+        var selected = picked.Selected.Where(c => Service.IsPeerConnected(c.Fingerprint)).ToArray();
+        if (selected.Length == 0) { SetStatus("所选设备已断开连接，请重新选择。", InfoBarSeverity.Warning); return; }
         if (group.Members.Count + selected.Length > GroupConversation.MaximumMembers)
         {
             SetStatus("群组最多 20 人，包含本机；请减少所选成员。", InfoBarSeverity.Warning);
             return;
         }
-        if (!AllRemoteMembersConnected(group))
-        {
-            SetStatus("当前有群成员离线；成员名单变更暂不可用。", InfoBarSeverity.Warning);
-            RefreshSelection();
-            return;
-        }
-        var proposed = group.Members.Concat(selected.Select(conversation => new GroupMember(conversation.Fingerprint, conversation.Name))).ToArray();
+        var proposed = group.Members.Concat(selected.Select(c => new GroupMember(c.Fingerprint, c.Name))).ToArray();
         _membershipChangeInFlight = true;
-        _isChoosingMembers = false;
         RefreshSelection();
         try
         {

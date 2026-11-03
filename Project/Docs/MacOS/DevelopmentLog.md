@@ -4,6 +4,13 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-03：0.5.1：选择成员弹窗与网段填写
+
+- **选择成员**：新增 `GroupMemberPicker.swift`，创建群聊与群主添加成员共用双栏弹窗；`TransferModel.groupInviteAvailability(for:)` 给出未连接/版本过低原因，`addGroupMembers(_:to:)` 把多台新成员作为同一个名单事务提交（原 `addGroupMember` 改为调用它）。新增 `GroupMemberPickerTests` 与批量添加测试。
+- **网段**：`ProbeTargets.normalized` 把三段简写补成 `/24`，`hosts(in:)` 也接受简写；`common` 列出 11 个路由器默认网段，设置页 `Menu("添加常用网段")` 只填入输入框；`company`、`automatic(for:)`、`roundHosts(saved:localAddresses:)` 在本机有 `10.80.x.x` 地址时每轮自动加入公司网段，`localIPv4Addresses()` 读取已启用的非回环 IPv4。`LANService` 的探测循环每轮重算目标。
+- **版本**：`Info.plist` 0.5.1（build 17）。
+- **验证**：全量 `swift test` 通过（`UnicastProbeTests` 9 项）。`testLoopbackScanFindsResponderAndIgnoresOwnFingerprint` 的随机端口偶尔与其他进程冲突，重跑通过，属已有问题。未验证：10.80.x 网络实测、选择成员弹窗人工点击。
+
 ## 2026-11-03：0.5.0 build 16 正式发布
 
 - **打包与公证**：从 master `c6d68c4` 运行 `FEIGE_NOTARY_PROFILE=feige-notary package-app.sh`，Developer ID Application: Song Li (9C8Y647J2R) 签名，公证提交 `0aa22599-829c-483b-8890-8593c12f2c49` 为 Accepted，已 staple。`spctl` 为 accepted / Notarized Developer ID；zip 解压后的应用同样通过 stapler 与 spctl。`Feige.icns` 与仓库主图标一致，10 个头像齐全。`FeigeMac-0.5.0.zip` 3,396,083 字节，SHA-256 `0eb7cb33…bfafe550`。

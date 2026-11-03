@@ -1,14 +1,70 @@
 import Darwin
 import Foundation
 
-/// User-configured probe targets: one private IPv4 address or a /24–/32 prefix.
+/// User-configured probe targets: one private IPv4 address, a /24–/32 prefix, or a three-octet /24 shorthand.
 public enum ProbeTargets {
     public static let maxEntries = 16
     public static let maxHosts = 4096
 
+    /// Router default LANs offered for one-click entry. None is probed until the user saves it: each /24 costs 254
+    /// probes a minute and the whole list would nearly exhaust `maxHosts`. Keep in sync with the Windows list.
+    public static let common: [(target: String, note: String)] = [
+        ("192.168.0.0/24", "TP-Link、D-Link、Netgear 等"),
+        ("192.168.1.0/24", "多数路由器、运营商光猫"),
+        ("192.168.3.0/24", "华为、荣耀路由器"),
+        ("192.168.8.0/24", "华为随身 Wi-Fi、4G/5G 路由"),
+        ("192.168.31.0/24", "小米路由器"),
+        ("192.168.50.0/24", "华硕路由器"),
+        ("192.168.68.0/24", "TP-Link Deco"),
+        ("192.168.86.0/24", "Google Nest Wifi"),
+        ("192.168.199.0/24", "极路由"),
+        ("10.0.0.0/24", "部分运营商路由器"),
+        ("10.0.1.0/24", "Apple AirPort"),
+    ]
+
+    /// Company subnets probed without being saved, but only while this machine itself has a 10.80.0.0/16 address, so
+    /// devices off the company network never sweep them. Keep in sync with the Windows list.
+    public static let company = ["10.80.1.0/24", "10.80.10.0/24"]
+
+    /// The unsaved targets that apply to a machine with `localAddresses`.
+    public static func automatic(for localAddresses: [UInt32]) -> [String] {
+        localAddresses.contains { $0 >> 16 == 0x0A50 } ? company : []
+    }
+
+    /// Hosts for one probe round: the saved targets plus the automatic ones. Saved targets win when both do not fit.
+    public static func roundHosts(saved: [String], localAddresses: [UInt32]) -> [UInt32] {
+        let base = hosts(in: saved) ?? []
+        let extra = automatic(for: localAddresses)
+        guard !extra.isEmpty, let combined = hosts(in: Array(Set(saved.map(normalized)).union(extra))) else { return base }
+        return combined
+    }
+
+    /// IPv4 addresses of this machine's up, non-loopback interfaces.
+    public static func localIPv4Addresses() -> [UInt32] {
+        var pointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&pointer) == 0, let first = pointer else { return [] }
+        defer { freeifaddrs(pointer) }
+        var result: [UInt32] = []
+        for item in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(item.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0, let addr = item.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let address = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
+            result.append(address)
+        }
+        return result
+    }
+
+    /// Canonical form of `entry`: trimmed, with a three-octet shorthand such as `10.80.1` expanded to `10.80.1.0/24`.
+    public static func normalized(_ entry: String) -> String {
+        let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.contains("/"), trimmed.split(separator: ".", omittingEmptySubsequences: false).count == 3 else { return trimmed }
+        return trimmed + ".0/24"
+    }
+
     /// Returns the host addresses of `entry`, or nil when it is not an allowed private target.
     public static func hosts(in entry: String) -> [UInt32]? {
-        let parts = entry.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "/", omittingEmptySubsequences: false)
+        let parts = normalized(entry).split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 1 || parts.count == 2, let base = parseIPv4(String(parts[0])), isPrivate(base) else { return nil }
         guard parts.count == 2 else { return [base] }
         guard parts[1].allSatisfy(\.isASCII), let prefix = Int(parts[1]), (24...32).contains(prefix) else { return nil }

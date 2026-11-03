@@ -8,16 +8,62 @@ using Feige.Core.Net;
 
 namespace Feige.Core.Discovery;
 
-/// <summary>User-configured probe targets: one private IPv4 address or a /24–/32 prefix.</summary>
+/// <summary>User-configured probe targets: one private IPv4 address, a /24–/32 prefix, or a three-octet /24 shorthand.</summary>
 public static class ProbeTargets
 {
     public const int MaxEntries = 16;
     public const int MaxHosts = 4096;
 
+    /// <summary>
+    /// Router default LANs offered for one-click entry. None is probed until the user saves it: each /24 costs 254
+    /// probes a minute and the whole list would nearly exhaust <see cref="MaxHosts"/>. Keep in sync with the macOS list.
+    /// </summary>
+    public static IReadOnlyList<(string Target, string Note)> Common { get; } =
+    [
+        ("192.168.0.0/24", "TP-Link、D-Link、Netgear 等"),
+        ("192.168.1.0/24", "多数路由器、运营商光猫"),
+        ("192.168.3.0/24", "华为、荣耀路由器"),
+        ("192.168.8.0/24", "华为随身 Wi-Fi、4G/5G 路由"),
+        ("192.168.31.0/24", "小米路由器"),
+        ("192.168.50.0/24", "华硕路由器"),
+        ("192.168.68.0/24", "TP-Link Deco"),
+        ("192.168.86.0/24", "Google Nest Wifi"),
+        ("192.168.199.0/24", "极路由"),
+        ("10.0.0.0/24", "部分运营商路由器"),
+        ("10.0.1.0/24", "Apple AirPort"),
+    ];
+
+    /// <summary>
+    /// Company subnets probed without being saved, but only while this machine itself has a 10.80.0.0/16 address, so
+    /// devices off the company network never sweep them. Keep in sync with the macOS list.
+    /// </summary>
+    public static IReadOnlyList<string> Company { get; } = ["10.80.1.0/24", "10.80.10.0/24"];
+
+    /// <summary>The unsaved targets that apply to a machine with <paramref name="localAddresses"/>.</summary>
+    public static IReadOnlyList<string> Automatic(IEnumerable<IPAddress> localAddresses)
+        => localAddresses.Any(address => address.AddressFamily == AddressFamily.InterNetwork
+                                         && address.GetAddressBytes() is [10, 80, _, _]) ? Company : [];
+
+    /// <summary>Hosts for one probe round: the saved targets plus the automatic ones. Saved targets win when both do not fit.</summary>
+    public static IReadOnlyList<uint> RoundHosts(IReadOnlyCollection<string> saved, IEnumerable<IPAddress> localAddresses)
+    {
+        IReadOnlyList<uint> baseHosts = Hosts(saved) ?? [];
+        IReadOnlyList<string> extra = Automatic(localAddresses);
+        if (extra.Count == 0) return baseHosts;
+        return Hosts(saved.Select(Normalize).Union(extra).ToArray()) ?? baseHosts;
+    }
+
+    /// <summary>Canonical form of <paramref name="entry"/>: trimmed, with a three-octet shorthand such as <c>10.80.1</c> expanded to <c>10.80.1.0/24</c>.</summary>
+    public static string Normalize(string entry)
+    {
+        string trimmed = entry.Trim();
+        return !trimmed.Contains('/') && trimmed.Split('.').Length == 3 ? trimmed + ".0/24" : trimmed;
+    }
+
     /// <summary>Returns the host addresses of <paramref name="entry"/>, or null when it is not an allowed private target.</summary>
     public static IReadOnlyList<uint>? Hosts(string entry)
     {
-        string[] parts = entry.Trim().Split('/');
+        string[] parts = Normalize(entry).Split('/');
         if (parts.Length > 2 || ParseIPv4(parts[0]) is not uint address || !IsPrivate(address)) return null;
         if (parts.Length == 1) return [address];
         if (parts[1].Length is 0 or > 2 || !parts[1].All(char.IsAsciiDigit)) return null;

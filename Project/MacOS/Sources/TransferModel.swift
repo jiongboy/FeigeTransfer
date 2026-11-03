@@ -95,7 +95,7 @@ enum SettingsError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidDeviceName: return "设备名称为空、过长或包含换行等控制字符，请修改后重试。"
-        case .invalidProbeTarget: return "只能填写私网 IPv4 地址或 /24–/32 网段，最多 16 项。"
+        case .invalidProbeTarget: return "只能填写私网 IPv4 地址、三段网段（如 10.80.1）或 /24–/32 网段，最多 16 项。"
         }
     }
 }
@@ -665,7 +665,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     /// Replaces the saved subnets and restarts discovery so the first round runs at once.
     func saveProbeSettings(targets: [String], allowsProbes: Bool) throws {
-        let cleaned = targets.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let cleaned = targets.map(ProbeTargets.normalized).filter { !$0.isEmpty }
         guard ProbeTargets.hosts(in: cleaned) != nil else { throw SettingsError.invalidProbeTarget }
         var updated = settings
         updated.probeTargets = cleaned
@@ -2111,6 +2111,12 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         chatPeers.filter { (channelsByPeer[$0.id]?.protocolVersion ?? 0) >= 4 }
     }
 
+    /// Why a conversation peer can or cannot be invited; peers that cannot are still listed in the picker.
+    func groupInviteAvailability(for peerID: String) -> GroupMemberPickerAvailability {
+        guard let channel = channelsByPeer[peerID] else { return .notConnected }
+        return channel.protocolVersion >= 4 ? .available : .unsupportedVersion
+    }
+
     var chatPeers: [ChatPeer] {
         var peers: [String: ChatPeer] = [:]
         for message in messages {
@@ -2263,15 +2269,26 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     }
 
     func addGroupMember(_ fingerprint: String, to groupID: UUID) async throws {
+        try await addGroupMembers([fingerprint], to: groupID)
+    }
+
+    /// Adds every selected device in one roster transaction, so all invitees join under the same revision.
+    func addGroupMembers(_ fingerprints: [String], to groupID: UUID) async throws {
         guard let group = groups.first(where: { $0.id == groupID }),
               let identity = preparedIdentity,
               group.ownerFingerprint == identity.fingerprint,
-              !group.members.contains(where: { $0.fingerprint == fingerprint }),
-              let channel = channelsByPeer[fingerprint], channel.protocolVersion >= 4 else {
+              !fingerprints.isEmpty, Set(fingerprints).count == fingerprints.count,
+              group.members.count + fingerprints.count <= GroupConversation.maximumMemberCount else {
             throw GroupConversationError.invalidControlMessage
         }
-        let member = try GroupConversationMember(fingerprint: fingerprint, displayName: channel.peerName)
-        try await updateGroupRoster(groupID: groupID, members: group.members + [member])
+        let newMembers = try fingerprints.map { fingerprint -> GroupConversationMember in
+            guard !group.members.contains(where: { $0.fingerprint == fingerprint }),
+                  let channel = channelsByPeer[fingerprint], channel.protocolVersion >= 4 else {
+                throw GroupConversationError.invalidControlMessage
+            }
+            return try GroupConversationMember(fingerprint: fingerprint, displayName: channel.peerName)
+        }
+        try await updateGroupRoster(groupID: groupID, members: group.members + newMembers)
     }
 
     func removeGroupMember(_ fingerprint: String, from groupID: UUID) async throws {

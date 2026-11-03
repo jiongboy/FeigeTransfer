@@ -437,8 +437,8 @@ public sealed class AppSession
 
     private void StartProbe(LocalDevice device, CancellationToken ct)
     {
-        var hosts = ProbeTargets.Hosts(Settings.ProbeTargets.ToArray()) ?? [];
-        if (!Settings.AllowsProbes && hosts.Count == 0 || V4ListenPort == 0) return;
+        string[] saved = Settings.ProbeTargets.ToArray();
+        if (!Settings.AllowsProbes && ProbeTargets.RoundHosts(saved, FeigeService.LocalAddresses()).Count == 0 || V4ListenPort == 0) return;
         string fingerprint = device.Fingerprint.Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
         var probe = new UnicastProbe(new(device.DeviceName, fingerprint, FeigeService.Capabilities, V4ListenPort,
             AvatarIds.IsKnown(Settings.AvatarId) ? Settings.AvatarId : null), Settings.AllowsProbes);
@@ -455,16 +455,18 @@ public sealed class AppSession
         if (ProbePortUnavailable) AppLog.Write("unicast probe: port unavailable");
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _probeCts = cancellation;
-        if (hosts.Count > 0) _probeLoop = RunProbeLoopAsync(probe, hosts, cancellation.Token);
+        _probeLoop = RunProbeLoopAsync(probe, saved, cancellation.Token);
     }
 
-    private async Task RunProbeLoopAsync(UnicastProbe probe, IReadOnlyList<uint> hosts, CancellationToken ct)
+    private async Task RunProbeLoopAsync(UnicastProbe probe, string[] saved, CancellationToken ct)
     {
         try
         {
             while (true)
             {
-                await probe.ScanAsync(hosts, ct);
+                // Recomputed each round: a laptop joining or leaving the company network starts or stops the company subnets.
+                var hosts = ProbeTargets.RoundHosts(saved, FeigeService.LocalAddresses());
+                if (hosts.Count > 0) await probe.ScanAsync(hosts, ct);
                 await Task.Delay(TimeSpan.FromSeconds(2), ct);
                 Post(() => { if (ReferenceEquals(_probe, probe)) FinishProbeRound(); });
                 await Task.Delay(TimeSpan.FromSeconds(58), ct);
@@ -522,8 +524,8 @@ public sealed class AppSession
     /// <summary>Saves the subnets and restarts discovery so the first round runs at once.</summary>
     public async Task SaveProbeSettingsAsync(string[] targets, bool allowsProbes)
     {
-        string[] cleaned = targets.Select(target => target.Trim()).Where(target => target.Length > 0).ToArray();
-        if (ProbeTargets.Hosts(cleaned) is null) throw new InvalidOperationException("只能填写私网 IPv4 地址或 /24–/32 网段，最多 16 项。");
+        string[] cleaned = targets.Select(ProbeTargets.Normalize).Where(target => target.Length > 0).ToArray();
+        if (ProbeTargets.Hosts(cleaned) is null) throw new InvalidOperationException("只能填写私网 IPv4 地址、三段网段（如 10.80.1）或 /24–/32 网段，最多 16 项。");
         Settings.SaveProbeSettings(cleaned, allowsProbes);
         if (IsRunning) await RefreshDiscoveryAsync(_lifetime.Token);
     }

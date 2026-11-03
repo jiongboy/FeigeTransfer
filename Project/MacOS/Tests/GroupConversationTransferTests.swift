@@ -645,6 +645,65 @@ final class GroupConversationTransferTests: XCTestCase {
     }
 
     @MainActor
+    func testOwnerAddsSeveralMembersInOneRosterTransaction() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let names = ["群主", "成员一", "成员二", "成员三"]
+        let stores = names.indices.map { DeviceIdentityStore(serviceIdentifier: "com.feige.group.batch.\($0).\(UUID())") }
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            stores.forEach { $0.delete() }
+        }
+        let models = zip(stores, names).map { store, name -> TransferModel in
+            let loader = GroupIdentityLoader(store: store)
+            return TransferModel(supportDirectory: root.appendingPathComponent(name), identityStore: store,
+                                 identityLoader: { try loader.load() })
+        }
+        for (model, name) in zip(models, names) {
+            try model.saveSettings(deviceName: name, receiveDirectory: root.appendingPathComponent(name + "-files"))
+            await model.start()
+        }
+        let owner = models[0], members = Array(models.dropFirst())
+        var listeners: [NWListener] = []
+        defer {
+            listeners.forEach { $0.cancel() }
+            models.forEach { $0.shutdown() }
+        }
+        var devices: [LANDevice] = []
+        for (index, member) in members.enumerated() {
+            let (listener, port) = try await makeListener(for: member, label: "batch-\(index)")
+            listeners.append(listener)
+            let device = try owner.manualDevice(host: "127.0.0.1", port: String(port))
+            devices.append(LANDevice(serviceName: serviceName(for: member.identityFingerprint), displayName: names[index + 1],
+                                     endpoint: device.endpoint, protocolVersions: [4]))
+        }
+        let approvals = Task { @MainActor in
+            while !Task.isCancelled {
+                for member in members {
+                    if member.pendingConnectionPeerName != nil { member.approveConnection(true) }
+                    for invitation in member.pendingGroupInvitations { member.acceptGroupInvitation(invitation.id, accepted: true) }
+                }
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        defer { approvals.cancel() }
+
+        for (member, device) in zip(members, devices) {
+            owner.requestConnection(to: device, protocolVersion: 4)
+            try await waitUntil {
+                owner.isConnected(to: member.identityFingerprint) && member.isConnected(to: owner.identityFingerprint)
+            }
+        }
+        let groupID = try await owner.createGroup(name: "批量添加", memberPeerIDs: [members[0].identityFingerprint])
+        try await waitUntil { Self.roster(members[0], groupID)?.count == 2 }
+
+        try await owner.addGroupMembers(members.dropFirst().map(\.identityFingerprint), to: groupID)
+        try await waitUntil { models.allSatisfy { Self.roster($0, groupID)?.count == 4 } }
+        XCTAssertEqual(Set(models.compactMap { Self.roster($0, groupID) }).count, 1)
+        XCTAssertEqual(owner.groups.first(where: { $0.id == groupID })?.revision, 1,
+                       "selected members must join in a single roster revision")
+    }
+
+    @MainActor
     private static func roster(_ model: TransferModel, _ groupID: UUID) -> [String]? {
         model.groups.first(where: { $0.id == groupID })?.members.map(\.fingerprint)
     }

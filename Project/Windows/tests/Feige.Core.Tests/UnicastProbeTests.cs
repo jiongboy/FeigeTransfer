@@ -16,8 +16,42 @@ public sealed class UnicastProbeTests
         Assert.Equal(254, ProbeTargets.Hosts("10.0.0.0/24")!.Count);
         Assert.Equal([0xAC100104u, 0xAC100105u], ProbeTargets.Hosts("172.16.1.4/31"));
         foreach (string invalid in new[] { "8.8.8.8", "127.0.0.1", "172.32.0.1", "10.0.0.0/23", "10.0.0.0/33", "10.0.0.0/", "010.0.0.1",
-                     "10.0.0", "10.0.0.256", "host.local", "", "fe80::1" })
+                     "10.0", "10.0.", "8.8.8", "10.0.0.256", "host.local", "", "fe80::1" })
             Assert.Null(ProbeTargets.Hosts(invalid));
+    }
+
+    [Fact]
+    public void ThreeOctetShorthandMeansTheWhole24()
+    {
+        Assert.Equal("10.80.1.0/24", ProbeTargets.Normalize(" 10.80.1 "));
+        Assert.Equal("10.80.1.5", ProbeTargets.Normalize("10.80.1.5"));
+        Assert.Equal("10.80.1.0/28", ProbeTargets.Normalize("10.80.1.0/28"));
+        Assert.Equal(ProbeTargets.Hosts("10.80.1.0/24"), ProbeTargets.Hosts("10.80.1"));
+        Assert.Null(ProbeTargets.Hosts("10.80.1/24"));
+    }
+
+    [Fact]
+    public void CompanySubnetsApplyOnlyOnTheCompanyNetwork()
+    {
+        IPAddress office = IPAddress.Parse("10.80.30.25"), home = IPAddress.Parse("192.168.1.5");
+        Assert.Equal(ProbeTargets.Company, ProbeTargets.Automatic([home, office]));
+        Assert.Empty(ProbeTargets.Automatic([home, IPAddress.Parse("10.81.0.1"), IPAddress.Parse("fd0a:5000::1")]));
+        Assert.Empty(ProbeTargets.RoundHosts([], [home]));
+        Assert.Equal(508, ProbeTargets.RoundHosts([], [office]).Count);
+        // A saved duplicate (in shorthand) is probed once; saved targets survive when the company ones do not fit.
+        Assert.Equal(509, ProbeTargets.RoundHosts(["10.80.1", "192.168.1.9"], [office]).Count);
+        string[] full = Enumerable.Range(0, 16).Select(i => $"192.168.{i}.0/24").ToArray();
+        Assert.Equal(ProbeTargets.Hosts(full), ProbeTargets.RoundHosts(full, [office]));
+        Assert.All(ProbeTargets.Company, target => Assert.Equal(254, ProbeTargets.Hosts(target)!.Count));
+    }
+
+    [Fact]
+    public void CommonTargetsAreDistinctValid24sThatFitTheLimits()
+    {
+        string[] targets = ProbeTargets.Common.Select(item => item.Target).ToArray();
+        Assert.Equal(targets.Length, targets.Distinct().Count());
+        Assert.All(targets, target => Assert.Equal(254, ProbeTargets.Hosts(target)!.Count));
+        Assert.NotNull(ProbeTargets.Hosts(targets));
     }
 
     [Fact]

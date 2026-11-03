@@ -15,6 +15,14 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-03 1.3.1：附近设备误报、选择成员弹窗、网段填写
+
+- **误报**：1.3.0 安装后附近设备出现很多 GUID 名称的条目。`PeerBrowser` 对任意 SRV/TXT 都按实例建条目，局域网里其他 mDNS 服务（如 `printer-1._ipp._tcp.local`）的 TXT 带上 A 记录后就被当成设备。现在 PTR 只接受 `_feige._tcp.local` 指向本服务实例的记录，SRV/TXT 只接受 `<实例>._feige._tcp.local`（`IsServiceInstance`）。新增 `Discovery_IgnoresRecordsOfOtherServicesOnTheLan`。
+- **选择成员**：新增 `Pages/GroupMemberPickerDialog.cs` 与 Core `Conversations/GroupMemberPickerSelection.cs`（排序、可选状态、剩余名额、确认按钮文案），`GroupsPage` 的创建群聊与添加成员都改用该弹窗；多台新成员一次提交为同一个名单事务。
+- **网段**：`ProbeTargets.Normalize` 把三段简写补成 `/24`；`Common`（11 个路由器默认网段）用于设置页 `DropDownButton`“添加常用网段”，已在输入框中的项禁用；`Company` 与 `Automatic(localAddresses)` 在本机有 `10.80.x.x` 地址时返回公司网段，`RoundHosts` 每轮按当前地址重算，与已保存网段合计超限时只探测已保存的。`AppSession.RunProbeLoopAsync` 改为每轮重算目标，没有目标时跳过扫描但保持循环。设置页提示当前是否自动探测公司网段，保存后用规范化结果刷新输入框。
+- **版本**：`Feige.App.csproj` 1.3.1，`Package.appxmanifest` 1.3.1.0。
+- **验证**：本机 Core 624/624；ROG（退出火绒后）与 Parallels 虚拟机 Core 全部通过，虚拟机构建并安装未签名测试包，UI 自动化确认“添加常用网段”菜单、简写保存与非公司网络下不显示自动探测提示。未验证：10.80.x 网络实测、选择成员弹窗人工点击。
+
 ## 2026-11-03 1.3.0 build 1306 正式发布
 
 - **构建与签名**：ROG 从 master `c6d68c4` 构建 x64、arm64 安装包，用证书 `EFD99E9E…`（CN=Songli，证书 SHA-256 与 `publisherCertificateSha256` 一致）签名并加时间戳。x64 68,111,632 字节，SHA-256 `B85F8941…264B495E`；arm64 65,435,424 字节，SHA-256 `8159FFC8…A44808D7`。sidecar `signed: true`，传到 Mac 后哈希一致。SSH 工具单次下载大文件会在约 23 MB 处中断，改为在 ROG 切成 15 MB 分块再拼接。

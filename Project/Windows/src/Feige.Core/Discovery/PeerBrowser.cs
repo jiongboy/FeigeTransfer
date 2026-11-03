@@ -181,15 +181,15 @@ public sealed class PeerBrowser : IAsyncDisposable
             {
                 switch (record)
                 {
-                    case PtrRecord ptr when ptr.Name == ServiceType:
+                    case PtrRecord ptr when ptr.Name == ServiceType && IsServiceInstance(ptr.Target):
                         HandlePointer(ptr, now, queries, lost);
                         break;
 
-                    case SrvRecord srv:
+                    case SrvRecord srv when IsServiceInstance(srv.Name):
                         HandleSrv(srv, now, queries, lost);
                         break;
 
-                    case TxtRecord txt:
+                    case TxtRecord txt when IsServiceInstance(txt.Name):
                         HandleTxt(txt, lost);
                         break;
 
@@ -394,6 +394,13 @@ public sealed class PeerBrowser : IAsyncDisposable
         _entries.Add(instance, entry);
         return entry;
     }
+
+    /// <summary>
+    /// True only for <c>&lt;instance&gt;.&lt;service type&gt;</c>. Every mDNS service on the LAN shares the multicast group, so
+    /// SRV/TXT records of other services (often GUID-named) arrive here too and must never become peers.
+    /// </summary>
+    private bool IsServiceInstance(DnsName name)
+        => name.Labels.Count == ServiceType.Labels.Count + 1 && new DnsName(name.Labels.Skip(1)) == ServiceType;
 
     private bool IsSelf(DnsName instance)
         => string.Equals(instance.FirstLabel, LocalInstanceLabel, StringComparison.OrdinalIgnoreCase) ||

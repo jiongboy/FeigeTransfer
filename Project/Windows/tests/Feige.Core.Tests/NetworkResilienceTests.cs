@@ -60,6 +60,22 @@ public sealed class NetworkResilienceTests
         Assert.Equal(3, peer.EndPoints.Count);
         Assert.Contains(peer.EndPoints, p => p.Address.Equals(IPAddress.Parse("10.20.0.9")));
     }
+    [Fact] public async Task Discovery_IgnoresRecordsOfOtherServicesOnTheLan()
+    {
+        var transport = new TestTransport(); await using var browser = new PeerBrowser(transport);
+        var foreign = new MdnsMessage { IsResponse = true };
+        var other = new DnsName("printer-1", "_ipp", "_tcp", "local");
+        var otherHost = new DnsName("printer-host", "local");
+        foreign.Answers.Add(new SrvRecord(other, 49980, otherHost));
+        foreign.Additionals.Add(new TxtRecord(other, ["txtvers=1"]));
+        foreign.Additionals.Add(new AddressRecord(otherHost, IPAddress.Parse("10.80.30.25")));
+        // A PTR under our type pointing at a name outside it is not an instance either.
+        foreign.Answers.Add(new PtrRecord(FeigeService.Type, new DnsName("x", "_other", "_tcp", "local")));
+        transport.Deliver(foreign, "10.80.30.25");
+        Assert.Empty(browser.Peers);
+        transport.Deliver(Announcement("10.80.30.88"), "10.80.30.88");
+        Assert.Equal("Network Test", Assert.Single(browser.Peers).DeviceName);
+    }
     [Fact] public async Task Discovery_UsesLocalSubnetBeforeUnrelatedVirtualNetworks()
     {
         var transport = new TestTransport(); await using var browser = new PeerBrowser(transport)

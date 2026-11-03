@@ -8,6 +8,7 @@ struct GroupMembersInspector: View {
 
     @State private var pendingRemoval: GroupConversationMember?
     @State private var showOwnerLeaveConfirmation = false
+    @State private var showMemberPicker = false
 
     private var isOwner: Bool { group.ownerFingerprint == model.identityFingerprint }
     private var rosterOperationPending: Bool {
@@ -18,12 +19,16 @@ struct GroupMembersInspector: View {
         group.members.filter { $0.fingerprint != model.identityFingerprint }
             .allSatisfy { model.isConnected(to: $0.fingerprint) }
     }
-    private var candidates: [ChatPeer] {
-        model.groupEligiblePeers.filter { peer in
-            !group.members.contains(where: { $0.fingerprint == peer.id }) &&
-                (searchText.isEmpty || peer.name.localizedCaseInsensitiveContains(searchText) ||
-                 peer.id.localizedCaseInsensitiveContains(searchText))
-        }
+    private var offlineMemberNames: [String] {
+        group.members.filter { $0.fingerprint != model.identityFingerprint && !model.isConnected(to: $0.fingerprint) }
+            .map { $0.displayName ?? "未知设备" }
+    }
+    /// Why the roster cannot change right now, or nil when the owner may invite.
+    private var addMemberBlockingReason: String? {
+        if rosterOperationPending { return "成员变更待处理，完成后再添加" }
+        if !offlineMemberNames.isEmpty { return "成员 \(offlineMemberNames.joined(separator: "、")) 离线" }
+        if group.members.count >= GroupConversation.maximumMemberCount { return "群聊已达到 \(GroupConversation.maximumMemberCount) 人上限" }
+        return nil
     }
     private var visibleMembers: [GroupConversationMember] {
         guard !searchText.isEmpty else { return group.members }
@@ -62,36 +67,6 @@ struct GroupMembersInspector: View {
                         }
                     }
 
-                    if isOwner {
-                        Divider().padding(.vertical, 3)
-                        Text("添加已连接设备").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        Text("受邀设备需要在对端接受邀请；只有成员名单事务全部确认并提交后，新成员才正式加入。")
-                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        if group.members.count >= GroupConversation.maximumMemberCount {
-                            Text("群聊已达到 20 人上限。").font(.caption).foregroundStyle(.secondary)
-                        } else if candidates.isEmpty {
-                            Text(searchText.isEmpty ? "没有可添加的已连接设备。" : "没有匹配的可添加设备。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            ForEach(candidates) { peer in
-                                HStack(spacing: 9) {
-                                    AvatarView(avatarID: model.avatarId(for: peer.id), size: 32)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(peer.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                        Text("已连接 · 可邀请").font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    Spacer(minLength: 4)
-                                    Button("添加成员") { addMember(peer.id) }
-                                        .accessibilityLabel("添加成员 \(peer.name)")
-                                        .controlSize(.small)
-                                        .disabled(rosterOperationPending || !allOtherMembersConnected ||
-                                                  group.members.count >= GroupConversation.maximumMemberCount)
-                                }
-                                .padding(7)
-                                .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
-                            }
-                        }
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -99,6 +74,13 @@ struct GroupMembersInspector: View {
             Divider()
             operationStatus
             if isOwner {
+                Button { showMemberPicker = true } label: { Label("添加成员", systemImage: "person.badge.plus") }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(addMemberBlockingReason ?? "选择要邀请的设备")
+                if let addMemberBlockingReason {
+                    Text(addMemberBlockingReason).font(.caption2).foregroundStyle(.secondary)
+                }
                 Button(group.members.count == 1 ? "结束群聊" : "退出并转让群主", role: .destructive) { showOwnerLeaveConfirmation = true }
                     .buttonStyle(.bordered)
                     .disabled(rosterOperationPending || !allOtherMembersConnected)
@@ -118,6 +100,13 @@ struct GroupMembersInspector: View {
         .frame(width: 310)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .controlBackgroundColor))
+        .sheet(isPresented: $showMemberPicker) {
+            GroupMemberPickerSheet(mode: .add(groupName: group.name), existingMemberCount: group.members.count,
+                                   candidates: model.groupMemberPickerCandidates(for: group),
+                                   blockingReason: addMemberBlockingReason,
+                                   onConfirm: { _, peerIDs in addMembers(peerIDs) },
+                                   onCancel: { showMemberPicker = false })
+        }
         .confirmationDialog("确认移出群聊？", isPresented: Binding(
             get: { pendingRemoval != nil },
             set: { if !$0 { pendingRemoval = nil } }
@@ -235,9 +224,10 @@ struct GroupMembersInspector: View {
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
     }
 
-    private func addMember(_ fingerprint: String) {
+    private func addMembers(_ fingerprints: [String]) {
+        showMemberPicker = false
         Task {
-            do { try await model.addGroupMember(fingerprint, to: group.id) }
+            do { try await model.addGroupMembers(fingerprints, to: group.id) }
             catch { model.errorMessage = error.localizedDescription }
         }
     }

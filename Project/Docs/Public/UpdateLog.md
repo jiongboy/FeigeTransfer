@@ -3,6 +3,14 @@
 > 只记录对双端或协作方式有影响的变更，按时间倒序排列。平台内部实现细节见各平台开发日志：
 > [macOS 开发日志](../MacOS/DevelopmentLog.md) · [Windows 开发日志](../Windows/DevelopmentLog.md)
 
+## 2026-11-03 Windows 1.3.1 与 macOS 0.5.1：附近设备误报、选择成员弹窗、网段填写
+
+- **Windows 附近设备误报**：用户只装了两台设备，附近设备却出现大量 GUID 条目。原因是 `PeerBrowser` 接收了局域网里任意服务的 SRV/TXT 记录（打印机、电视等），并按实例名建了设备。现在只接受 `<实例>._feige._tcp.local` 的 PTR/SRV/TXT。macOS 用系统浏览 `_feige._tcp`，不受影响。
+- **选择成员弹窗**：创建群聊与群主添加成员共用双栏“选择成员”弹窗，规则见[界面规范](UISpecification.md)第 4 节；一次选中的新成员作为同一个成员名单事务提交。
+- **其他网段**：支持三段简写（`10.80.1` 保存为 `10.80.1.0/24`）；新增“添加常用网段”菜单（11 个路由器默认网段，只填入不自动保存）；本机任一 IPv4 在 `10.80.0.0/16` 内时，每轮自动探测公司网段 `10.80.1.0/24`、`10.80.10.0/24`，不写入设置。规则见[开发计划](CollaborationEnhancementPlan.md)第 2 节。协议与线格式不变，仍为 v6。
+- **版本**：Windows 1.3.1（build 1307，MSIX 备用清单 1.3.1.0），macOS 0.5.1（build 17）。
+- **验证**：Windows Core 测试全部通过（新增外来服务记录过滤、简写、常用网段、公司网段测试），虚拟机内安装测试包并通过 UI 自动化确认菜单与提示；macOS 全量 `swift test` 通过。未验证：公司 10.80.x 网络下的实际探测，以及选择成员弹窗的人工点击。
+
 ## 2026-11-03 正式发布 Windows 1.3.0 与 macOS 0.5.0
 
 - 从 master `c6d68c4` 构建。Windows 1.3.0 build 1306 在 ROG 用发布证书签名（x64、arm64，带时间戳）；macOS 0.5.0 build 16 用 Developer ID 签名并经 Apple 公证（Accepted，已 staple），`spctl` 结果为 Notarized Developer ID。交付物、校验文件和发布说明位于 `Release/Windows/1.3.0/` 与 `Release/MacOS/0.5.0/`。
