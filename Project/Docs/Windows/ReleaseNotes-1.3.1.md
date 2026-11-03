@@ -1,6 +1,6 @@
 # Windows 1.3.1 发布说明
 
-状态：**待发布**（2026-11-03，build 1307）。含文件大小与 SHA-256 的定稿在 `Release/Windows/1.3.1/ReleaseNotes-1.3.1.md`。逐轮实现与验证见 [Windows 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
+状态：**已发布**（2026-11-03，build 1307）。含文件大小与 SHA-256 的定稿在 `Release/Windows/1.3.1/ReleaseNotes-1.3.1.md`，公开页面为 [GitHub v1.3.1](https://github.com/jiongboy/FeigeTransfer/releases/tag/v1.3.1)。逐轮实现与验证见 [Windows 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
 
 ## 修复
 

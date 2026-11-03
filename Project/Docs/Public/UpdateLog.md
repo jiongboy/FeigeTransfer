@@ -3,6 +3,14 @@
 > 只记录对双端或协作方式有影响的变更，按时间倒序排列。平台内部实现细节见各平台开发日志：
 > [macOS 开发日志](../MacOS/DevelopmentLog.md) · [Windows 开发日志](../Windows/DevelopmentLog.md)
 
+## 2026-11-03 正式发布 Windows 1.3.1 与 macOS 0.5.1
+
+- 从 master `c05a9e4` 构建。Windows 1.3.1 build 1307 在 ROG 用发布证书签名（x64、arm64，带时间戳）；macOS 0.5.1 build 17 用 Developer ID 签名并经 Apple 公证（Accepted，已 staple）。交付物、校验文件、签名清单和发布说明位于 `Release/Windows/1.3.1/` 与 `Release/MacOS/0.5.1/`。
+- GitHub：新建 `v1.3.1`（Windows，设为 Latest）与 `macos-v0.5.1`（不设 Latest）。重新下载后 SHA-256 一致，`latest/download` 返回 200。
+- Mac mini 局域网更新源：Windows 清单切到 1.3.1 b1307（x64、arm64），macOS 清单切到 0.5.1 b17，`protocolVersion` 均为 6；按临时目录 → 哈希核对 → 改名 → HTTP 重新下载核对 → 备份并替换清单的顺序发布，旧清单保留为 `*.previous.json`。线上 Windows 清单经 `Feige.UpdateTool verify` 验证通过。
+- 发布中发现：`Feige.UpdateTool sign` 与 `New-UpdateRecord.ps1` 都以 `CreateNew` 写输出，暂存目录 `Project/Windows/dist/build` 里遗留上一版的 `feige-windows-update.json` 会导致签名报 IOException。本次把旧清单（与已归档的 1.3.0 清单哈希一致）改名后重签。
+- 未完成：从 1.3.0 / 0.5.0 的应用内升级、公司 10.80.x 网络实测、选择成员弹窗人工点击。
+
 ## 2026-11-03 Windows 1.3.1 与 macOS 0.5.1：附近设备误报、选择成员弹窗、网段填写
 
 - **Windows 附近设备误报**：用户只装了两台设备，附近设备却出现大量 GUID 条目。原因是 `PeerBrowser` 接收了局域网里任意服务的 SRV/TXT 记录（打印机、电视等），并按实例名建了设备。现在只接受 `<实例>._feige._tcp.local` 的 PTR/SRV/TXT。macOS 用系统浏览 `_feige._tcp`，不受影响。

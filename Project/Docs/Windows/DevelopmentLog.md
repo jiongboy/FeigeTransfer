@@ -15,6 +15,13 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-03 1.3.1 build 1307 正式发布
+
+- **构建与签名**：提交以 git bundle 传到 ROG（不经 GitHub），从 `c05a9e4` 构建 x64、arm64，用证书 `EFD99E9E…` 签名并加 DigiCert 时间戳。x64 68,131,960 字节，SHA-256 `299A2508…5B20D3E14`；arm64 65,465,096 字节，SHA-256 `5BB3219D…C00AE38D`。sidecar `signed: true`；15 MB 分块传到 Mac 后哈希一致。`Get-AuthenticodeSignature` 为 UnknownError（自签名证书基本约束提示），与 1.3.0 相同。
+- **更新清单**：`New-UpdateRecord.ps1 -Tag v1.3.1-b1307 -ProtocolVersion 6` 生成记录，CNG 密钥 `feige-update-release-2026` 签名，ROG 与 Mac 上 `verify` 均通过；签名清单另存到 `Release/Windows/1.3.1/`。首次签名报 IOException：暂存目录里还留着 1.3.0 的 `feige-windows-update.json`，而 `sign` 用 `CreateNew` 写输出；核对它与已归档的 1.3.0 清单一致后改名为 `feige-windows-update-1.3.0.json` 再签。
+- **发布**：Mac mini 局域网更新源（`versions/v1.3.1-b1307`）与 GitHub Release `v1.3.1`（Latest），均重新下载核对哈希。
+- **未完成**：1.3.0 → 1.3.1 应用内升级未实测。
+
 ## 2026-11-03 1.3.1：附近设备误报、选择成员弹窗、网段填写
 
 - **误报**：1.3.0 安装后附近设备出现很多 GUID 名称的条目。`PeerBrowser` 对任意 SRV/TXT 都按实例建条目，局域网里其他 mDNS 服务（如 `printer-1._ipp._tcp.local`）的 TXT 带上 A 记录后就被当成设备。现在 PTR 只接受 `_feige._tcp.local` 指向本服务实例的记录，SRV/TXT 只接受 `<实例>._feige._tcp.local`（`IsServiceInstance`）。新增 `Discovery_IgnoresRecordsOfOtherServicesOnTheLan`。

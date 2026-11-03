@@ -4,6 +4,13 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-03：0.5.1 build 17 正式发布
+
+- **打包与公证**：从 `c05a9e4` 运行 `FEIGE_NOTARY_PROFILE=feige-notary package-app.sh`，公证提交 `bd8e0413-45eb-4611-8739-c1ed6fd18036` 为 Accepted，已 staple；`spctl` 为 Notarized Developer ID，zip 解压后的应用同样通过；`Feige.icns` 与仓库主图标一致。`FeigeMac-0.5.1.zip` 3,444,813 字节，SHA-256 `3cdada2c…b767ddc`。
+- **更新源**：发布记录 `0.5.1-b17`（`protocolVersion` 6）用 `~/.feige/macos-release.pem` 经 `openssl` 签名，公钥与 `UpdateSource.json` 一致；上传到 Mac mini `versions/0.5.1-b17` 并替换清单。签名清单与发布记录另存到 `Release/MacOS/0.5.1/`。
+- **GitHub**：Release `macos-v0.5.1`（非 Latest），重新下载校验通过。
+- **未完成**：0.5.0 → 0.5.1 应用内升级未实测。
+
 ## 2026-11-03：0.5.1：选择成员弹窗与网段填写
 
 - **选择成员**：新增 `GroupMemberPicker.swift`，创建群聊与群主添加成员共用双栏弹窗；`TransferModel.groupInviteAvailability(for:)` 给出未连接/版本过低原因，`addGroupMembers(_:to:)` 把多台新成员作为同一个名单事务提交（原 `addGroupMember` 改为调用它）。新增 `GroupMemberPickerTests` 与批量添加测试。
