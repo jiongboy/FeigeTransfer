@@ -47,11 +47,11 @@ final class OutboxTests: XCTestCase {
     @MainActor
     func testOutboxDeliversInOrderAfterConnecting() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let a = DeviceIdentityStore(serviceIdentifier: "com.feige.outbox.a.\(UUID())")
-        let b = DeviceIdentityStore(serviceIdentifier: "com.feige.outbox.b.\(UUID())")
-        defer { try? FileManager.default.removeItem(at: root); a.delete(); b.delete() }
-        let sender = TransferModel(supportDirectory: root.appendingPathComponent("a"), identityStore: a)
-        let receiver = TransferModel(supportDirectory: root.appendingPathComponent("b"), identityStore: b)
+        let a = "com.feige.outbox.a.\(UUID())"
+        let b = "com.feige.outbox.b.\(UUID())"
+        defer { try? FileManager.default.removeItem(at: root); EncryptedIdentityStore(directory: root.appendingPathComponent("a/Identity"), serviceIdentifier: a).delete(); EncryptedIdentityStore(directory: root.appendingPathComponent("b/Identity"), serviceIdentifier: b).delete() }
+        let sender = TransferModel(supportDirectory: root.appendingPathComponent("a"), identityService: a)
+        let receiver = TransferModel(supportDirectory: root.appendingPathComponent("b"), identityService: b)
         try sender.saveSettings(deviceName: "发送方", receiveDirectory: root.appendingPathComponent("unused"))
         try receiver.saveSettings(deviceName: "接收方", receiveDirectory: root.appendingPathComponent("received"))
         await sender.start()

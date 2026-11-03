@@ -33,6 +33,11 @@ done
 plutil -lint "$app/Contents/Info.plist"
 app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 output_dir="$repo_root/Release/MacOS/$app_version"
+# A published version's deliverables are fixed; a new build needs a new CFBundleShortVersionString.
+if [[ -e "$output_dir/飞鸽快传.app" || -e "$output_dir/FeigeMac-$app_version.zip" ]]; then
+    echo "Release/MacOS/$app_version already has deliverables; bump CFBundleShortVersionString instead of overwriting them." >&2
+    exit 1
+fi
 mkdir -p "$output_dir"
 
 # Pick a stable signing identity when one is installed. FEIGE_SIGN_IDENTITY wins; otherwise the

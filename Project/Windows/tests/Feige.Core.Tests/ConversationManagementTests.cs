@@ -58,6 +58,31 @@ public sealed class ConversationManagementTests : IDisposable
         Assert.Contains(fresh, ConversationHistory.Load(_root).Messages);
     }
 
+    [Fact]
+    public void MergeMovesRecordsUnderTargetFingerprintAndKeepsOrder()
+    {
+        var history = ConversationHistory.Load(_root);
+        var old = Message() with { At = DateTimeOffset.UtcNow.AddDays(-2) };
+        var recent = Message(B);
+        history.Upsert(old); history.Upsert(recent); history.SetHidden(A, true);
+        history.MergeConversation(A.ToLowerInvariant(), B);
+        var loaded = ConversationHistory.Load(_root);
+        Assert.All(loaded.Messages, m => Assert.Equal(B, m.Fingerprint));
+        Assert.Equal([old.Id, recent.Id], loaded.Messages.Select(m => m.Id));
+        Assert.False(loaded.IsHidden(A)); Assert.False(loaded.IsHidden(B));
+        Assert.Throws<ArgumentException>(() => loaded.MergeConversation(B, B));
+    }
+
+    [Fact]
+    public void MergeRefusesActiveOrPendingMessages()
+    {
+        var history = ConversationHistory.Load(_root);
+        var pending = Message(direction: TransferDirection.Sent, state: MessageState.Queued);
+        history.Upsert(pending); history.Upsert(Message(B));
+        Assert.Throws<InvalidOperationException>(() => history.MergeConversation(A, B));
+        Assert.Equal(A, history.Messages.Single(m => m.Id == pending.Id).Fingerprint);
+    }
+
     [Theory]
     [InlineData(MessageState.Queued)]
     [InlineData(MessageState.Sending)]

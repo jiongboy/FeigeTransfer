@@ -211,6 +211,24 @@ public sealed class ConversationHistory
         }
     }
 
+    /// <summary>
+    /// Moves a conversation's records under another fingerprint after the user confirms both are the same
+    /// device (for example after that device reset its identity). Never called without that confirmation.
+    /// </summary>
+    public void MergeConversation(string fromFingerprint, string intoFingerprint)
+    {
+        string from = RequireFingerprint(fromFingerprint), into = RequireFingerprint(intoFingerprint);
+        if (from == into) throw new ArgumentException("不能合并到同一个会话。");
+        lock (_gate)
+        {
+            if (_messages.Any(m => m.Fingerprint == from && m.IsActive))
+                throw new InvalidOperationException("该会话还有待发送或正在收发的消息，请完成或取消后再合并。");
+            var next = _messages.Select(m => m.Fingerprint == from ? m with { Fingerprint = into } : m).ToList();
+            var hidden = new HashSet<string>(_hidden, StringComparer.Ordinal); hidden.Remove(from); hidden.Remove(into);
+            Commit(next, hidden);
+        }
+    }
+
     private static string RequireFingerprint(string fingerprint)
     {
         if (fingerprint is null) throw new InvalidDataException("会话身份无效。");

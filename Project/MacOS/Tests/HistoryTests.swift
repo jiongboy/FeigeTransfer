@@ -75,6 +75,36 @@ final class HistoryTests: XCTestCase {
     }
 
     @MainActor
+    func testMergeMovesOldConversationIntoTargetAndPersists() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let values = [
+            ChatMessage(peerID: "peer-old", peerName: "旧名称", direction: .received, kind: .text,
+                        date: Date(timeIntervalSinceNow: -86_400), text: "重置前", status: .received),
+            ChatMessage(peerID: "peer-new", peerName: "新名称", direction: .received, kind: .text,
+                        text: "重置后", status: .received)
+        ]
+        try JSONEncoder().encode(values).write(to: root.appendingPathComponent("messages.json"))
+        let model = TransferModel(supportDirectory: root)
+        model.hideConversation("peer-old")
+        model.setDraft("未发送的草稿", for: "peer-old")
+        XCTAssertThrowsError(try model.mergeConversation("peer-new", into: "peer-new"))
+        try model.mergeConversation("peer-old", into: "peer-new")
+        XCTAssertEqual(model.chatPeers.map(\.id), ["peer-new"])
+        XCTAssertEqual(model.messages.map(\.text), ["重置前", "重置后"])
+        XCTAssertEqual(model.drafts["peer-new"], "未发送的草稿")
+        XCTAssertTrue(model.hiddenConversationIDs.isEmpty)
+
+        let reloaded = TransferModel(supportDirectory: root)
+        XCTAssertEqual(reloaded.messages.map(\.peerID), ["peer-new", "peer-new"])
+
+        reloaded.messages.append(ChatMessage(peerID: "peer-x", peerName: "X", direction: .sent, kind: .text,
+                                             text: "待发送", status: .queued, outboxSince: Date()))
+        XCTAssertThrowsError(try reloaded.mergeConversation("peer-x", into: "peer-new"), "pending messages block merging")
+    }
+
+    @MainActor
     func testCannotDeleteConnectedOrPendingConversation() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

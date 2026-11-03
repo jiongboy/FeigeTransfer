@@ -33,6 +33,34 @@ final class EncryptedIdentityStoreTests: XCTestCase {
         XCTAssertTrue(SecKeyVerifySignature(first.publicKey, algorithm, challenge as CFData, signature as CFData, &error))
     }
 
+    func testDeletedDataFolderRestoresSameIdentityFromKeychainBackup() throws {
+        let root = temporaryDirectory()
+        let service = service()
+        defer {
+            EncryptedIdentityStore(directory: root, serviceIdentifier: service).delete()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let original = try EncryptedIdentityStore(directory: root, serviceIdentifier: service).loadOrCreate()
+        try FileManager.default.removeItem(at: root)
+        let restored = try EncryptedIdentityStore(directory: root, serviceIdentifier: service).loadOrCreate()
+        XCTAssertEqual(restored.fingerprint, original.fingerprint)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("identity.pkcs1.bin").path))
+
+        // An install from before the backup existed gains one on its next launch.
+        EncryptedIdentityStore.deleteKeychainItem(service: service, account: "identity-sealed-key")
+        _ = try EncryptedIdentityStore(directory: root, serviceIdentifier: service).loadOrCreate()
+        XCTAssertNotNil(EncryptedIdentityStore.readKeychainItem(service: service, account: "identity-sealed-key"))
+
+        // A backup that disagrees with the key file is replaced by the file's contents.
+        let file = try Data(contentsOf: root.appendingPathComponent("identity.pkcs1.bin"))
+        EncryptedIdentityStore.deleteKeychainItem(service: service, account: "identity-sealed-key")
+        let stale: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecAttrAccount as String: "identity-sealed-key", kSecValueData as String: Data("stale".utf8)]
+        XCTAssertEqual(SecItemAdd(stale as CFDictionary, nil), errSecSuccess)
+        _ = try EncryptedIdentityStore(directory: root, serviceIdentifier: service).loadOrCreate()
+        XCTAssertEqual(EncryptedIdentityStore.readKeychainItem(service: service, account: "identity-sealed-key"), file)
+    }
+
     func testPrivateKeyFileIsEncryptedAtRest() throws {
         let root = temporaryDirectory()
         let service = service()

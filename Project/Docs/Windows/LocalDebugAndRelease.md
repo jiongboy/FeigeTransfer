@@ -9,7 +9,7 @@
 | 阶段 | 位置 | 目的 | 产物 |
 | --- | --- | --- | --- |
 | 1. 开发 | 本机 macOS | 改代码、跑单元测试 | 提交并推送到 `origin/master` |
-| 2. 调试 | 本机 Parallels 虚拟机 | 验证功能与界面 | 自签名 MSIX，本地安装 |
+| 2. 调试 | 本机 Parallels 虚拟机 | 验证功能与界面 | 未签名 EXE 测试包（`-AllowUnsignedTest`），本地安装 |
 | 3. 发布 | ROG 真机 | 正式签名、交付 | `Release/Windows/<version>/` |
 
 ## 二、阶段 1：本机开发
@@ -45,7 +45,9 @@ cd Project/MacOS && swift build && swift test
 & "C:\Program Files\Git\cmd\git.exe" -C C:\Work\FeigeTransfer pull --ff-only origin master
 ```
 
-### 3.3 构建并安装（推荐：自签名 MSIX）
+### 3.3 构建并安装（备用：自签名 MSIX）
+
+> 正式发布只提供 EXE，不发布 MSIX。日常调试优先用 `Build-Installer.ps1 -AllowUnsignedTest` 生成 EXE 测试包，测试包不放进 `Release/`。以下 MSIX 方式只在 EXE 无法启动时作为备用。MSIX 与 EXE 的资料和身份互不共享，不要在同一台机器上混装。
 
 ```powershell
 cd C:\Work\FeigeTransfer\Project\Windows\scripts
@@ -195,7 +197,7 @@ cd C:\Work\FeigeTransfer\Project\Windows\scripts
 发布前在虚拟机中确认：
 
 - [ ] `Feige.Core.Tests` 全部通过
-- [ ] MSIX 自签名构建成功，安装后窗口正常打开
+- [ ] EXE 测试包安装后窗口正常打开
 - [ ] 改动涉及的功能实际点过一遍（收发、会话、设置等）
 - [ ] `Build-Installer.ps1 -AllowUnsignedTest` 产出安装包与 `.json`
 - [ ] 提交已推送，虚拟机与 ROG 同一提交

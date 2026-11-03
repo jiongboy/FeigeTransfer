@@ -5,6 +5,7 @@ using Feige.App.Services;
 using Feige.Core.Conversations;
 using Feige.Core.Discovery;
 using Feige.Core.Net;
+using Feige.Core.Profiles;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -29,6 +30,8 @@ public sealed partial class SendPage : Page
     private bool _showConversation;
     private bool _syncingConversations;
     private readonly ObservableCollection<ConversationItem> _conversationRows = [];
+    // Nearby entries whose device already has a visible conversation are reached from that conversation instead.
+    private readonly ObservableCollection<DiscoveredPeer> _peerRows = [];
     private readonly HashSet<ConversationItem> _observedConversations = [];
     private string? _pageError;
     private bool _showNetworkAdvice;
@@ -55,7 +58,7 @@ public sealed partial class SendPage : Page
     protected override void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
-        ConversationList.ItemsSource = _conversationRows; PeerList.ItemsSource = Session.Peers;
+        ConversationList.ItemsSource = _conversationRows; PeerList.ItemsSource = _peerRows;
         SyncConversationRows(); RefreshConversationAvatars();
         if (_selected is not null)
         { _selected.Messages.CollectionChanged -= OnMessagesChanged; _selected.Messages.CollectionChanged += OnMessagesChanged; }
@@ -102,13 +105,16 @@ public sealed partial class SendPage : Page
         string refreshLabel = Session.IsRefreshingPeers ? "正在刷新附近设备" : "刷新附近设备";
         ToolTipService.SetToolTip(RefreshPeersButton, refreshLabel);
         AutomationProperties.SetName(RefreshPeersButton, refreshLabel);
-        DisconnectButton.IsEnabled = Session.IsConnectingTo(_selected) || Session.IsConnected(_selected);
+        bool linked = Session.IsConnectingTo(_selected) || Session.IsConnected(_selected);
+        var nearby = linked ? null : Session.NearbyPeer(_selected);
+        DisconnectButton.IsEnabled = linked || (nearby is not null && (nearby.ProtocolVersion >= 4 ? Session.CanConnectV4 : Session.CanConnect));
+        ToolTipService.SetToolTip(DisconnectButton, linked || _selected is null ? null : nearby is null ? "对方当前不在附近设备中" : "连接此设备");
         if (_selected is null && !Session.IsStarting)
             ConversationList.SelectedItem = _conversationRows.FirstOrDefault(c => c.Fingerprint == Session.ActiveFingerprint) ?? _conversationRows.FirstOrDefault();
         PeerTitle.Text = _selected?.Name ?? "消息";
         PeerAvatarImage.Source = AvatarCatalog.GetImageSource(_selected?.AvatarId ?? Session.Settings.AvatarId);
         ConnectionState.Text = _selected is null ? "选择设备，开始安全传输" : Session.CanSend(_selected) ? "已连接 · 可以发送消息和文件" : "未连接 · 会话记录保存在本机";
-        DisconnectButton.Content = Session.IsConnectingTo(_selected) ? "取消请求" : "断开连接";
+        DisconnectButton.Content = Session.IsConnectingTo(_selected) ? "取消请求" : linked ? "断开连接" : "连接";
         bool canSend = Session.CanCompose(_selected);
         Composer.IsEnabled = canSend;
         Composer.PlaceholderText = !canSend ? "连接设备后，在这里输入消息…" :
@@ -170,12 +176,25 @@ public sealed partial class SendPage : Page
             ConversationList.SelectedItem = _selected is not null && _conversationRows.Contains(_selected) ? _selected : null;
         }
         finally { _syncingConversations = false; }
+        SyncPeerRows();
         if (_selected is not null && !_conversationRows.Contains(_selected)) SelectConversation(null);
+    }
+    private void SyncPeerRows()
+    {
+        var known = _conversationRows.Select(c => AvatarIds.NormalizeFingerprint(c.Fingerprint)).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        var wanted = Session.Peers.Where(p => AvatarIds.NormalizeFingerprint(p.Fingerprint) is not { } key || !known.Contains(key)).ToArray();
+        foreach (var removed in _peerRows.Except(wanted).ToArray()) _peerRows.Remove(removed);
+        for (int index = 0; index < wanted.Length; index++)
+        {
+            int previous = _peerRows.IndexOf(wanted[index]);
+            if (previous < 0) _peerRows.Insert(index, wanted[index]);
+            else if (previous != index) _peerRows.Move(previous, index);
+        }
     }
     private void UpdateEmptyStates()
     {
         ConversationCount.Text = $"会话 · {_conversationRows.Count}";
-        PeerCount.Text = $"附近设备 · {Session.Peers.Count}";
+        PeerCount.Text = $"附近设备 · {_peerRows.Count}";
         PeerRefreshStatus.Visibility = Session.IsRefreshingPeers || Session.PeerRefreshFailed || Session.LastPeerRefreshAt is not null
             ? Visibility.Visible : Visibility.Collapsed;
         PeerRefreshStatus.Text = Session.IsRefreshingPeers ? "正在搜索附近设备…"
@@ -223,6 +242,11 @@ public sealed partial class SendPage : Page
         ToolTipService.SetToolTip(trust, "常驻联系人上线后自动连接，接收文件仍需确认");
         trust.Click += (_, _) => Session.SetTrustedPeer(target.Fingerprint, !trusted);
         menu.Items.Add(trust);
+        var merge = new MenuFlyoutItem { Text = "合并到其他会话…", IsEnabled = Session.CanMergeConversation(target) && Session.MergeTargets(target).Count > 0 };
+        AutomationProperties.SetAutomationId(merge, "MergeConversationMenuItem");
+        ToolTipService.SetToolTip(merge, merge.IsEnabled ? "同一台设备重置身份后会出现新会话，可把旧记录并入新会话" : "请先断开此会话的连接，并等待传输结束");
+        merge.Click += async (_, _) => await MergeConversationAsync(target);
+        menu.Items.Add(merge);
         var hide = new MenuFlyoutItem { Text = "隐藏会话" };
         AutomationProperties.SetAutomationId(hide, "HideConversationMenuItem");
         hide.Click += async (_, _) => { try { await Session.SetConversationHiddenAsync(target, true); } catch (Exception ex) { ShowError("隐藏失败：" + ErrorText.Describe(ex)); } };
@@ -251,6 +275,33 @@ public sealed partial class SendPage : Page
                 await Session.DeleteConversationAsync(conversation);
         }
         catch (Exception ex) { ShowError("删除失败：" + ErrorText.Describe(ex)); }
+    }
+
+    private async Task MergeConversationAsync(ConversationItem source)
+    {
+        var targets = Session.MergeTargets(source);
+        var picker = new ComboBox { ItemsSource = targets.Select(c => c.Name).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetName(picker, "合并到的会话");
+        var content = new StackPanel { Spacing = 12, MaxWidth = 420 };
+        content.Children.Add(new TextBlock
+        {
+            Text = $"“{source.Name}”的聊天记录将移入所选会话，之后删除这个会话。仅在确认两者是同一台设备（例如对方重装或重置后设备指纹变化）时合并，合并后无法撤销。",
+            TextWrapping = TextWrapping.Wrap
+        });
+        content.Children.Add(picker);
+        var dialog = new ContentDialog
+        {
+            Title = "合并会话", Content = content,
+            PrimaryButtonText = "合并", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close
+        };
+        try
+        {
+            if (await UiPromptService.Current.ShowAsync(dialog) != ContentDialogResult.Primary || picker.SelectedIndex < 0) return;
+            var target = targets[picker.SelectedIndex];
+            await Session.MergeConversationAsync(source, target);
+            ConversationList.SelectedItem = target;
+        }
+        catch (Exception ex) { ShowError("合并失败：" + ErrorText.Describe(ex)); }
     }
 
     private void OnConversationClick(object sender, ItemClickEventArgs e)
@@ -493,7 +544,17 @@ public sealed partial class SendPage : Page
         else ((MainWindow)App.MainWindow!).ContinueSetup();
     }
     private async void OnDisconnectClick(object sender, RoutedEventArgs e)
-    { try { await Session.DisconnectAsync(_selected); } catch (Exception ex) { ShowError(ErrorText.Describe(ex)); } }
+    {
+        var conversation = _selected;
+        if (!Session.IsConnectingTo(conversation) && !Session.IsConnected(conversation))
+        {
+            if (Session.NearbyPeer(conversation) is not { } peer) return;
+            try { await Session.ConnectAsync(peer); }
+            catch (Exception ex) { ShowConnectionError(ex); }
+            return;
+        }
+        try { await Session.DisconnectAsync(conversation); } catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
+    }
     private async void OnImagesClick(object sender, RoutedEventArgs e) => await PickAttachmentsAsync(true);
     private async void OnFilesClick(object sender, RoutedEventArgs e) => await PickAttachmentsAsync(false);
     private async Task PickAttachmentsAsync(bool images)

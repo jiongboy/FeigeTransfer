@@ -15,6 +15,31 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-03 身份密钥注册表副本与 1.3.0 发布准备
+
+- **身份副本**：`IdentityStore` 生成密钥时，除了写 `identity.pkcs8.dpapi`，还把同一份 DPAPI 保护数据写入 `HKCU\Software\Songli\FeigeTransfer\IdentityBackup`。文件不见了而副本还在时，从副本恢复文件并沿用原指纹；文件存在时以文件为准：没有副本（旧安装）或副本内容不一致时都用文件内容重写，重写失败不影响启动。隔离测试构建（`FEIGE_TEST_ISOLATION`）不读写真实副本。MSIX 的 HKCU 写入被系统虚拟化，卸载 MSIX 后副本随之消失，EXE 与 MSIX 之间不共享身份。
+- **安装渠道**：用户确认 Windows 正式发布只提供 EXE，不发布 MSIX。`DevelopmentRules`、`UpdatePolicy`、`ProjectOverview`、`LocalDebugAndRelease` 已同步：虚拟机调试改用未签名 EXE 测试包，`Build-Msix.ps1` 仅作备用，代码中的打包分支保留不动。
+- **版本**：`Feige.App.csproj` 升到 1.3.0，`Package.appxmanifest` 升到 1.3.0.0（原为 1.2.0.0，未随 1.2.1 同步；仅供备用调试）。启动日志的 `protocol=` 改为读取 `FeigeService.Capabilities`。
+- **交付目录**：b1303/b1304 未签名测试包移出 `Release/Windows/1.2.1/`，放到 `Project/Windows/obj/TestInstallers/1.2.1/`。1.2.1 目录只保留已签名的 b1301/b1302 和更新清单。
+- **验证**：VM 中 Core 616/616、App 7/7，新增 `IdentityStoreBackupTests`（删除资料目录后恢复同一指纹，旧安装补建副本）。
+- **未完成**：未生成 1.3.0 安装包；正式包须在 ROG 用发布证书签名，至少包含 x64。合并界面、身份副本的安装后实测和 Mac↔Windows 互通尚未验收。
+
+## 2026-11-03 会话手动合并、附近设备去重与 b1304 测试安装
+
+- **背景**：对端 Mac 的数据目录被重建，身份指纹改变，同一台设备因此出现两个会话。指纹不随改名变化，所以不做自动合并。
+- **合并**：`ConversationHistory.MergeConversation` 把来源指纹的记录改到目标指纹下，保留原有时间顺序，并清除两者的隐藏标记。来源会话有待发或正在收发的消息时拒绝合并。`AppSession.MergeConversationAsync` 重建目标会话、在目标没有草稿时转入来源草稿、移除来源会话行、取消来源的常驻联系人、清除来源未读。入口是会话右键菜单“合并到其他会话…”：弹出确认框，选择目标，并说明合并无法撤销。
+- **附近设备去重**：`SendPage` 的附近设备列表改为 `_peerRows`，已有可见会话的指纹不再出现在附近设备里；计数随之变化。会话标题栏按钮在未连接时显示“连接”，只有在附近设备中找到对方时才可用。
+- **测试**：`UnicastProbeTests.LoopbackScanFindsResponder` 改用系统分配的空闲端口，修复偶发端口冲突。新增 2 项合并测试。
+- **验证**：Mac 和 VM 上 Core 616/616 通过，VM App 测试 6/6 通过。`FeigeSetup-1.2.1-b1304-arm64.exe`（未签名，SHA-256 `057D9C24…A4E17A`）已安装在 VM 中，截图确认已有会话的设备不再出现在附近设备中。
+- **未完成**：未点击验证合并界面；安装包基于未提交的工作区构建。
+
+## 2026-11-03 Parallels ARM64 构建、测试与 b1303 未签名测试安装
+
+- **环境**：Parallels Windows 11 ARM64 / .NET SDK 10.0.402。将提交 `a3402da` 的 `Project/Windows`、`Project/Ui` 与公共测试向量暂存到来宾临时目录（排除 `bin/obj/dist`），完成后已删除。
+- **验证**：WinUI 工程（含 XAML）完整编译；Core 614/614，`Feige.App.Tests` 6/6（`AppSettingsIsolationTests` 仅在 `FEIGE_TEST_ISOLATION` 构建中编译）。
+- **打包与安装**：`Build-Installer.ps1 -Platform arm64 -BuildNumber 1303 -AllowUnsignedTest` 生成 `Release/Windows/1.2.1/FeigeSetup-1.2.1-b1303-arm64.exe`（65,373,924 字节，SHA-256 `E609685E1BE6DE1155EA37E87C13594CE011A6F8704DB4CEE4E9CE41EBFE0F9F`，未签名，不得发布到更新源）。静默覆盖安装到当前用户的 EXE 版位置并启动，`app.log` 显示 `version=1.2.1.0`，用户资料保留。来宾中旧 MSIX `1.2.0.1` 仍已安装，本轮仅停止其进程。
+- **未完成**：界面功能与 Mac↔Windows 互通待人工验收。启动日志中的 `protocol=3,4` 是固定文案，未反映实际 `3,4,5,6` 能力。
+
 ## 2026-11-03 协作增强五项（跨网段、未读、常驻联系人、v6 文件夹与续传、离线待发）
 
 - **跨网段**：`Feige.Core/Discovery/UnicastProbe.cs` 单播探测与私网来源过滤，设置页可编辑探测目标。

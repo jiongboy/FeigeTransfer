@@ -4,6 +4,22 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-03：身份密钥钥匙串副本与 0.5.0 发布准备
+
+- **身份副本**：`EncryptedIdentityStore` 写入 `identity.pkcs1.bin` 时，把同一份 AES-GCM 密文另存为钥匙串通用密码项 `identity-sealed-key`（`AfterFirstUnlockThisDeviceOnly`，与包装密钥同属一个 service）。密钥文件缺失而副本存在时，从副本恢复文件并沿用原指纹；旧安装下次启动时补建副本。`delete()` 同时清除副本。副本没有包装密钥就无法解密，因此不降低现有安全性；钥匙串被清空时仍会生成新身份。
+- **版本**：`Info.plist` 升到 0.5.0（build 16）。`package-app.sh` 在 `Release/MacOS/<版本>/` 已有 `.app` 或 zip 时报错退出，不再删除重建，避免覆盖已公证的 0.4.1（build 12）。
+- **以文件为准**：密钥文件存在时以文件为准，副本缺失或内容不一致都会用文件内容重写。
+- **测试隔离**：`OutboxTests`、`TrustedPeerTests` 传入的 `identityStore:` 参数被 `TransferModel` 忽略，实际用的是正式的钥匙串 service。新增副本后，这两项测试把测试密钥写成了本机正式副本，第二个测试端从中恢复出同一指纹，导致连接失败。已改为各自传入唯一的 `identityService:`，并删除测试写入的正式副本项（已安装的旧版应用从未写过该项）。
+- **验证**：`swift test` 全量通过：应用 96 项（跳过 5 项）、核心 75 项。新增 `testDeletedDataFolderRestoresSameIdentityFromKeychainBackup`，覆盖恢复、补建和替换过期副本。测试后确认正式 service 下没有副本项。
+- **未完成**：未生成 0.5.0 正式包；公证需要 `FEIGE_NOTARY_PROFILE`。合并界面、身份副本的安装后实测和与 Windows 互通尚未验收。
+
+## 2026-11-03：会话手动合并与附近设备去重
+
+- **合并**：`TransferModel.mergeConversation(_:into:)` 把来源会话的 `peerID` 改为目标指纹，按时间重新排序，清除两者的隐藏标记，并迁移草稿、取消来源的常驻联系人、清除来源未读。来源会话处于连接中或有待发、正在收发的消息时拒绝合并。会话右键菜单“合并到其他会话…”弹出确认框，每个目标对应一个“并入“名称””按钮。
+- **附近设备去重**：新增 `nearbyDevice(forPeer:)`，优先按指纹提示匹配，再按旧服务名匹配。`undisplayedDevices` 排除已有会话的设备，会话标题栏的“请求连接”也改用这个匹配。
+- **验证**：`swift test` 通过，应用 96 项（跳过 5 项），核心 74 项，新增 `testMergeMovesOldConversationIntoTargetAndPersists`。临时签名包已重装到 `/Applications`，`codesign --verify --deep --strict` 通过，已启动。
+- **未完成**：未点击验证合并界面。
+
 ## 2026-11-03：协作增强五项（跨网段、未读、常驻联系人、v6 文件夹与续传、离线待发）
 
 - **跨网段**：`Identity/Sources/UnicastProbe.swift` 实现单播探测报文与私网来源过滤；设置中维护探测目标。

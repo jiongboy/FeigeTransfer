@@ -9,7 +9,7 @@
 - UI：WinUI 3 / Windows App SDK（C# 与 .NET），遵循 Fluent Design。
 - 网络：Windows 原生 Socket/WinRT 网络能力；Bonjour/mDNS 发现通过可维护的兼容层实现。
 - 文件：Windows 文件选择器与 StorageFolder；接收端支持应用数据/用户授权目录。
-- 安装：新增自包含 EXE 安装包（Inno Setup），按用户安装；保留 MSIX 构建。正式发布使用可信代码签名。
+- 安装：正式发布只提供自包含 EXE 安装包（Inno Setup），按用户安装，使用可信代码签名。不发布 MSIX（2026-11-03 确定）；`Build-Msix.ps1` 仅保留为虚拟机调试的备用方式。
 - 共享互通：旧发布包基于 [v1 历史协议](../Public/ProtocolV1-Historical.md)，当前 1.2.0 已切换到 [v3 协议](../Public/ProtocolV3.md)，交互以 [UI 与交互同步规范](../Public/UISpecification.md)为准。
 
 ## 当前项目状态

@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var showHistory = false
     @State private var dropTargeted = false
     @State private var pendingDeletePeerID: String?
+    @State private var pendingMergePeerID: String?
     @State private var showConnectionHelp = false
     @State private var showUsageHelp = false
     @State private var showEmojiPalette = false
@@ -36,7 +37,7 @@ struct ContentView: View {
     private var currentDevice: LANDevice? {
         if let selectedDeviceID { return model.nearbyDevices.first { $0.id == selectedDeviceID } }
         guard let currentPeer else { return nil }
-        return model.nearbyDevices.first { $0.serviceName == currentPeer.serviceName }
+        return model.nearbyDevice(forPeer: currentPeer.id)
     }
     private var currentName: String { currentGroup?.name ?? currentPeer?.name ?? currentDevice?.displayName ?? "设备会话" }
     private var currentConnectionPending: Bool {
@@ -92,8 +93,10 @@ struct ContentView: View {
                                failureReason: failureReason)
         }
     }
+    /// Nearby entries whose device already has a visible conversation are reached from that conversation.
     private var undisplayedDevices: [LANDevice] {
-        model.nearbyDevices.filter { device in !model.chatPeers.contains { $0.serviceName == device.serviceName } }
+        let shown = Set(model.chatPeers.compactMap { model.nearbyDevice(forPeer: $0.id)?.id })
+        return model.nearbyDevices.filter { !shown.contains($0.id) }
     }
 
     var body: some View {
@@ -176,6 +179,19 @@ struct ContentView: View {
             Button("取消", role: .cancel) { pendingDeletePeerID = nil }
         } message: {
             Text("只删除本机保存的消息和会话状态，不删除已接收的文件或独立传输记录。")
+        }
+        .confirmationDialog("合并会话", isPresented: Binding(
+            get: { pendingMergePeerID != nil },
+            set: { if !$0 { pendingMergePeerID = nil } }
+        ), titleVisibility: .visible) {
+            if let source = pendingMergePeerID {
+                ForEach(model.mergeTargets(for: source)) { target in
+                    Button("并入“\(target.name)”") { mergePendingConversation(into: target.id) }
+                }
+            }
+            Button("取消", role: .cancel) { pendingMergePeerID = nil }
+        } message: {
+            Text("“\(model.chatPeers.first { $0.id == pendingMergePeerID }?.name ?? "")”的聊天记录将移入所选会话，之后删除这个会话。仅在确认两者是同一台设备（例如对方重装或重置后设备指纹变化）时合并，合并后无法撤销。")
         }
         .confirmationDialog("群组邀请", isPresented: Binding(
             get: { !model.pendingGroupInvitations.isEmpty },
@@ -384,6 +400,8 @@ struct ContentView: View {
                             }
                             trustedPeerButton(peer.id)
                             Divider()
+                            Button("合并到其他会话…") { pendingMergePeerID = peer.id }
+                                .disabled(!model.canDeleteConversation(peer.id) || model.mergeTargets(for: peer.id).isEmpty)
                             Button("隐藏会话") { model.hideConversation(peer.id) }
                             Button("删除记录…", role: .destructive) { pendingDeletePeerID = peer.id }
                                 .disabled(!model.canDeleteConversation(peer.id))
@@ -481,6 +499,17 @@ struct ContentView: View {
         selectedPeerID = id
         selectedGroupID = nil
         selectedDeviceID = nil
+    }
+
+    private func mergePendingConversation(into target: String) {
+        guard let source = pendingMergePeerID else { return }
+        do {
+            try model.mergeConversation(source, into: target)
+            openConversation(target)
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
+        pendingMergePeerID = nil
     }
 
     private func deletePendingConversation() {

@@ -27,6 +27,7 @@ public struct EncryptedIdentityStore: Sendable {
     private let directory: URL
     private let serviceIdentifier: String
     private let wrappingKeyAccount = "identity-wrapping-key"
+    private let sealedKeyAccount = "identity-sealed-key"
 
     public init(directory: URL, serviceIdentifier: String = EncryptedIdentityStore.defaultServiceIdentifier) {
         self.directory = directory
@@ -37,9 +38,25 @@ public struct EncryptedIdentityStore: Sendable {
 
     /// Loads the stored identity, creating one on first use. Throws rather than silently rotating a
     /// damaged identity, so a peer never sees a changed fingerprint without an explicit reset.
+    ///
+    /// The sealed key is also kept as a Keychain item, so deleting the app's data folder or reinstalling
+    /// does not announce this Mac to peers as a new device; only `delete()` or a wiped Keychain does.
     public func loadOrCreate() throws -> DeviceIdentity {
         if FileManager.default.fileExists(atPath: keyFile.path) {
-            return try loadExisting()
+            let identity = try loadExisting()
+            // The file is authoritative: installs that predate the backup get one, and a backup that
+            // no longer matches the file is replaced.
+            if let sealed = try? Data(contentsOf: keyFile),
+               Self.readKeychainItem(service: serviceIdentifier, account: sealedKeyAccount) != sealed {
+                try? writeSealedBackup(sealed)
+            }
+            return identity
+        }
+        if let sealed = Self.readKeychainItem(service: serviceIdentifier, account: sealedKeyAccount) {
+            let plaintext = try Self.open(sealed, using: try wrappingKeyOrThrow())
+            let identity = try Self.identity(fromPrivateKeyDER: plaintext)
+            try writeKeyFile(sealed)
+            return identity
         }
         let created = try createNew()
         return created
@@ -69,6 +86,7 @@ public struct EncryptedIdentityStore: Sendable {
     public func delete() {
         try? FileManager.default.removeItem(at: keyFile)
         Self.deleteKeychainItem(service: serviceIdentifier, account: wrappingKeyAccount)
+        Self.deleteKeychainItem(service: serviceIdentifier, account: sealedKeyAccount)
         // Keys written by releases that still used a Keychain key item are removed too, so an
         // upgraded install never leaves an orphaned non-exportable key behind.
         _ = LegacyKeychainKeyStore(serviceIdentifier: serviceIdentifier).delete()
@@ -103,6 +121,12 @@ public struct EncryptedIdentityStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let wrappingKey = try wrappingKeyOrCreate()
         let sealed = try Self.seal(privateKeyDER, using: wrappingKey)
+        try writeKeyFile(sealed)
+        try writeSealedBackup(sealed)
+    }
+
+    private func writeKeyFile(_ sealed: Data) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Write to a sibling file and rename, so an interrupted write cannot destroy the identity.
         let temporary = directory.appendingPathComponent(".identity-\(UUID().uuidString).tmp")
         try sealed.write(to: temporary, options: [.atomic])
@@ -166,6 +190,16 @@ public struct EncryptedIdentityStore: Sendable {
             return SymmetricKey(data: existing)
         }
         return key
+    }
+
+    /// Keeps the already sealed key in the Keychain; it is useless without the wrapping key beside it.
+    private func writeSealedBackup(_ sealed: Data) throws {
+        Self.deleteKeychainItem(service: serviceIdentifier, account: sealedKeyAccount)
+        var query: [String: Any] = baseQuery(account: sealedKeyAccount)
+        query[kSecValueData as String] = sealed
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw DeviceIdentityError.privateKeyUnreadable(status) }
     }
 
     private func wrappingKeyOrThrow() throws -> SymmetricKey {

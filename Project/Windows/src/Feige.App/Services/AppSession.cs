@@ -181,6 +181,10 @@ public sealed class AppSession
         ? IsConnecting
         : _v4PendingByPeer.ContainsKey(ConversationHistory.NormalizeFingerprint(conversation.Fingerprint)) ||
           (Volatile.Read(ref _connectionSlot) != V3SlotFree && _connection is null && _v4PendingByPeer.Count == 0);
+    /// <summary>The discovered entry advertising this conversation's full fingerprint, if any (an unauthenticated hint).</summary>
+    public DiscoveredPeer? NearbyPeer(ConversationItem? conversation)
+        => conversation is null || AvatarIds.NormalizeFingerprint(conversation.Fingerprint) is not { } key ? null
+            : Peers.Where(peer => AvatarIds.NormalizeFingerprint(peer.Fingerprint) == key).OrderByDescending(peer => peer.ProtocolVersion).FirstOrDefault();
     public bool IsConnected(ConversationItem? conversation)
     {
         if (conversation is null) return false;
@@ -363,7 +367,7 @@ public sealed class AppSession
             _acceptLoop = Task.Run(() => AcceptLoopAsync(networkToken));
             _v4AcceptLoop = Task.Run(() => V4AcceptLoopAsync(networkToken));
             Publish(DiscoveryIssue is null ? $"已就绪 · {Device.DeviceName} · v3/v4 端口 {ListenPort}/{V4ListenPort}" : "自动发现暂不可用，可刷新或手动连接。");
-            AppLog.Write($"started: protocol=3,4 listeners={ListenPort},{V4ListenPort} messages={_messages!.Messages.Count}");
+            AppLog.Write($"started: protocol={FeigeService.Capabilities} listeners={ListenPort},{V4ListenPort} messages={_messages!.Messages.Count}");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -2226,6 +2230,31 @@ public sealed class AppSession
                     current.Summary = retained.LastOrDefault() is not { } last ? "暂无消息" : last.Kind == MessageKind.Text ? last.Text.ReplaceLineEndings(" ") : last.FileName;
                 }
             }
+            Changed();
+        });
+    }
+
+    public bool CanMergeConversation(ConversationItem conversation) => CanDeleteConversation(conversation);
+    public IReadOnlyList<ConversationItem> MergeTargets(ConversationItem conversation)
+        => Conversations.Where(c => c.Fingerprint != conversation.Fingerprint && !IsConversationHidden(c)).ToArray();
+
+    /// <summary>Folds <paramref name="source"/> into <paramref name="target"/> once the user confirms they are one device.</summary>
+    public async Task MergeConversationAsync(ConversationItem source, ConversationItem target)
+    {
+        if (!CanMergeConversation(source)) throw new InvalidOperationException("请先断开此会话的连接，并等待传输结束后再合并。");
+        string from = source.Fingerprint, into = target.Fingerprint;
+        await Task.Run(() => _messages!.MergeConversation(from, into));
+        await OnUiAsync(() =>
+        {
+            var rows = _messages!.Messages.Where(m => m.Fingerprint == into).ToArray();
+            target.Messages.Clear();
+            foreach (var entry in rows) target.Messages.Add(new MessageItem(entry));
+            target.Summary = rows.LastOrDefault() is not { } last ? "暂无消息" : last.Kind == MessageKind.Text ? last.Text.ReplaceLineEndings(" ") : last.FileName;
+            if (string.IsNullOrWhiteSpace(target.Draft)) target.Draft = source.Draft;
+            Conversations.Remove(source); source.Messages.Clear(); source.Draft = "";
+            if (IsTrustedPeer(from)) SetTrustedPeer(from, false);
+            Unread.Clear(from);
+            RefreshUnread(into);
             Changed();
         });
     }

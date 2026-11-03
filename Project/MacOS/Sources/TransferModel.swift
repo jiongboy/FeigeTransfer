@@ -2117,7 +2117,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             peers[message.peerID] = ChatPeer(id: message.peerID, name: message.peerName, preview: message.preview, date: message.date)
         }
         for (id, peer) in peers {
-            if let device = nearbyDevices.first(where: { $0.serviceName == peer.serviceName }) {
+            if let device = nearbyDevice(forPeer: id) {
                 peers[id] = ChatPeer(id: id, name: device.displayName, preview: peer.preview, date: peer.date)
             }
         }
@@ -2166,13 +2166,42 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         markConversationRead(id)
     }
 
+    /// The nearby entry for a conversation: the advertised full fingerprint first, then the legacy service name.
+    /// Discovery data is an unauthenticated hint; connecting still verifies the peer's identity.
+    func nearbyDevice(forPeer id: String) -> LANDevice? {
+        let key = AvatarID.normalizeFingerprint(id)
+        if let key, let device = nearbyDevices.first(where: { AvatarID.normalizeFingerprint($0.fingerprintHint) == key }) {
+            return device
+        }
+        let serviceName = ChatPeer(id: id, name: "", preview: "", date: Date()).serviceName
+        return nearbyDevices.first { $0.serviceName == serviceName }
+    }
+
+    func mergeTargets(for id: String) -> [ChatPeer] { chatPeers.filter { $0.id != id } }
+
+    /// Folds one conversation into another after the user confirms they are the same device, for example
+    /// after that device reset its identity and appears with a new fingerprint. Never done automatically.
+    func mergeConversation(_ source: String, into target: String) throws {
+        guard source != target, canDeleteConversation(source) else { throw ConversationManagementError.activeConversation }
+        var merged = messages
+        for index in merged.indices where merged[index].peerID == source { merged[index].peerID = target }
+        var hidden = hiddenConversationIDs
+        hidden.remove(source)
+        hidden.remove(target)
+        try persistConversationState(messages: merged.sorted { $0.date < $1.date }, hidden: hidden)
+        if let draft = drafts[source], (drafts[target] ?? "").isEmpty { setDraft(draft, for: target) }
+        clearDraft(for: source)
+        if isTrustedPeer(source) { try? setTrustedPeer(source, trusted: false) }
+        markConversationRead(source)
+    }
+
     var hiddenConversations: [ChatPeer] {
         var peers: [String: ChatPeer] = [:]
         for message in messages where hiddenConversationIDs.contains(message.peerID) {
             peers[message.peerID] = ChatPeer(id: message.peerID, name: message.peerName, preview: message.preview, date: message.date)
         }
         for (id, peer) in peers {
-            if let device = nearbyDevices.first(where: { $0.serviceName == peer.serviceName }) {
+            if let device = nearbyDevice(forPeer: id) {
                 peers[id] = ChatPeer(id: id, name: device.displayName, preview: peer.preview, date: peer.date)
             }
         }
@@ -3866,7 +3895,7 @@ enum ConversationManagementError: LocalizedError {
     case activeConversation, archiveUnavailable
     var errorDescription: String? {
         switch self {
-        case .activeConversation: "请先断开此设备并结束未完成的传输，再删除会话记录。"
+        case .activeConversation: "请先断开此设备并结束未完成或待发送的传输，再删除或合并会话记录。"
         case .archiveUnavailable: "现有会话记录无法读取，因此没有覆盖原文件。请先备份并修复记录文件。"
         }
     }

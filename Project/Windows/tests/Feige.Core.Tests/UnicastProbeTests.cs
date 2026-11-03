@@ -60,7 +60,13 @@ public sealed class UnicastProbeTests
     [Fact]
     public async Task LoopbackScanFindsResponder()
     {
-        int port = 52800 + Random.Shared.Next(100);
+        // Ask the OS for a free UDP port; a fixed random range collided with other tests and local apps.
+        int port;
+        using (var probe = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Dgram, System.Net.Sockets.ProtocolType.Udp))
+        {
+            probe.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Any, 0));
+            port = ((System.Net.IPEndPoint)probe.LocalEndPoint!).Port;
+        }
         await using var responder = new UnicastProbe(Advertisement, respondsToProbes: true, port);
         responder.Start();
         Assert.True(responder.CanRespond);

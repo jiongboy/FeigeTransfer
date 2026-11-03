@@ -61,7 +61,7 @@ All Windows and macOS deliverables go to repository-adjacent `Release/`, which i
 | Failure behavior | Reject, cancel, disconnect, timeout, malformed IDs/offsets/digests, disk-full, revoked permissions, duplicate names and traversal. |
 | Native UI | Credential prompts, IME, drag/drop, preview/open, conversation isolation, appearance, DPI and window reopen. |
 | Special environments | Firewall, LAN permissions, multiple interfaces, VPN/proxy, isolated Wi-Fi and sleep/resume. |
-| Distribution | macOS Developer ID notarization / Windows trusted-signed EXE; separately verify MSIX if retained; clean-machine install/upgrade/uninstall. |
+| Distribution | macOS Developer ID notarization / Windows trusted-signed EXE; clean-machine install/upgrade/uninstall. Windows ships the EXE installer only; MSIX is not a release channel. |
 
 Ad-hoc macOS preview packages are not notarized releases. Local TCP/model/window tests do not replace physical-device interoperability and native UI acceptance. Keep verified results, user feedback and pending acceptance clearly separated; see the [shared update log](UpdateLog.md).
 
