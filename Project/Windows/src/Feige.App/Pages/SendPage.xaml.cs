@@ -336,7 +336,7 @@ public sealed partial class SendPage : Page
         {
             var group = new StackPanel { Spacing = 4 };
             group.Children.Add(new TextBlock { Text = title, FontSize = 12 });
-            var grid = new WrapGrid
+            var grid = new VariableSizedWrapGrid
             {
                 Orientation = Orientation.Horizontal,
                 MaximumRowsOrColumns = 6,
