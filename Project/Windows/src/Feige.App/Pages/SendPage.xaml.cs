@@ -487,7 +487,8 @@ public sealed partial class SendPage : Page
             if (conversation.Draft == text) conversation.Draft = "";
             if (ReferenceEquals(_selected, conversation) && Composer.Text == text) Composer.Text = "";
         }
-        catch (Exception ex) { ShowError(ErrorText.Describe(ex)); }
+        // A dropped connection is already shown on the failed message row and in the conversation status.
+        catch (Exception ex) { if (!NetworkFailureAdvice.IsApplicable(ex)) ShowError(ErrorText.Describe(ex)); }
         RefreshState();
     }
     private async void OnConnectClick(object sender, RoutedEventArgs e)

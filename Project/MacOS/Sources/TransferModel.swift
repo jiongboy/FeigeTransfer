@@ -206,6 +206,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private enum ConnectionPurpose { case direct; case group(UUID) }
     private var activeConnectionTokens: Set<UUID> = []
     private var purposeByToken: [UUID: ConnectionPurpose] = [:]
+    // Only attempts the user started report failures in an alert; automatic redials just update status.
+    private var userInitiatedConnectionTokens: Set<UUID> = []
     private var directConnectionTokens: Set<UUID> = []
     private var directPeerIDs: Set<String> = []
     private var groupPeerIDs: [UUID: Set<String>] = [:]
@@ -939,7 +941,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         guard settings.firstRunComplete, isIdentityReady else { isFirstRun = true; return }
         connectingServiceNames.insert(device.serviceName)
         beginConnection(NetworkByteStream(endpoint: device.endpoint), role: .initiator, pendingFiles: [],
-                        serviceName: device.serviceName, purpose: .group(group.id), protocolVersion: preferredGroupProtocolVersion(for: device))
+                        serviceName: device.serviceName, purpose: .group(group.id), protocolVersion: preferredGroupProtocolVersion(for: device),
+                        userInitiated: true)
     }
 
     func requestConnection(to device: LANDevice, pendingFiles: [URL] = []) {
@@ -962,7 +965,8 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         connectingServiceNames.insert(device.serviceName)
         let stream = NetworkByteStream(endpoint: device.endpoint)
         beginConnection(stream, role: .initiator, pendingFiles: pendingFiles,
-                        serviceName: device.serviceName, protocolVersion: protocolVersion)
+                        serviceName: device.serviceName, protocolVersion: protocolVersion,
+                        userInitiated: !isAutoDialing)
     }
 
     func clearError() {
@@ -1037,7 +1041,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     private func beginConnection(_ stream: NetworkByteStream, role: HandshakeRole, pendingFiles: [URL],
                                  serviceName: String? = nil, purpose: ConnectionPurpose = .direct,
-                                 protocolVersion: UInt16 = 3) {
+                                 protocolVersion: UInt16 = 3, userInitiated: Bool = false) {
         guard let identity = preparedIdentity else {
             stream.close()
             if let serviceName { connectingServiceNames.remove(serviceName) }
@@ -1048,6 +1052,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         let token = UUID()
         activeConnectionTokens.insert(token)
         purposeByToken[token] = purpose
+        if userInitiated { userInitiatedConnectionTokens.insert(token) }
         if case .direct = purpose { directConnectionTokens.insert(token) }
         transportByToken[token] = stream
         if let serviceName { serviceNameByToken[token] = serviceName }
@@ -1072,6 +1077,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             } catch {
                 let trustedPeerID = trustedDialTokens.removeValue(forKey: token)
                 guard activeConnectionTokens.contains(token) else { return }
+                let userInitiated = userInitiatedConnectionTokens.contains(token)
                 finishConnectionAttempt(token)
                 let wasRejected = (error as? ConnectionError).map {
                     if case .rejected = $0 { return true }; return false
@@ -1080,9 +1086,11 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                     noteTrustedDialFailure(trustedPeerID, rejected: wasRejected)
                 }
                 let rejectedLocally = role == .responder && wasRejected
-                if !rejectedLocally && !(error is CancellationError) {
+                if userInitiated && !(error is CancellationError) {
                     errorMessage = error.localizedDescription
                     shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
+                } else if !rejectedLocally && !(error is CancellationError) {
+                    connectionState = "连接未建立：\(error.localizedDescription)"
                 }
                 if !pendingFiles.isEmpty { canRetry = true }
                 refreshConnectionSummary()
@@ -1110,6 +1118,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         activeConnectionTokens.remove(token)
         directConnectionTokens.remove(token)
         purposeByToken.removeValue(forKey: token)
+        userInitiatedConnectionTokens.remove(token)
         if closeTransport { transportByToken.removeValue(forKey: token)?.close() }
         else { transportByToken.removeValue(forKey: token) }
         connectionTasksByToken.removeValue(forKey: token)
@@ -3703,7 +3712,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
                 disconnect(peerID: peerID, failureReason: error.localizedDescription,
                            preservePendingRequests: true)
                 schedulePendingGroupLeaveReconnect(peerID: peerID)
-                if !(error is CancellationError) {
+                if !(error is CancellationError) && !isConnectionLoss(error) {
                     errorMessage = error.localizedDescription
                     shouldSuggestNetworkHelp = isNetworkTroubleshootingFailure(error)
                 }
