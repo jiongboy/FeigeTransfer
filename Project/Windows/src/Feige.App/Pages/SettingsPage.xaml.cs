@@ -227,7 +227,7 @@ public sealed partial class SettingsPage : Page
     private async void OnInstallUpdateClick(object sender, RoutedEventArgs e)
     {
         if (!AppUpdates.Current.CanInstall || App.MainWindow is not MainWindow window) return;
-        var dialog = new ContentDialog { Title = "安装更新并重启？", Content = "将保存草稿和记录，等待当前文字及文件收发完成后退出并安装。重新启动后需要重新同意连接。",
+        var dialog = new ContentDialog { Title = "安装更新并重启？", Content = "将保存草稿和记录，等待当前文字及文件收发完成后退出并安装。重新启动后会自动重新连接。",
             PrimaryButtonText = AppSession.Current.HasUpdateWork ? "收发完成后安装" : "安装并重启", CloseButtonText = "稍后", DefaultButton = ContentDialogButton.Close };
         try { if (await UiPromptService.Current.ShowAsync(dialog) == ContentDialogResult.Primary) await AppUpdates.Current.InstallWhenReadyAsync(window); }
         catch (Exception ex) { ShowUpdateError(ex); }

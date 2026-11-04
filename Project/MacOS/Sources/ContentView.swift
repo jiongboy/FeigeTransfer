@@ -753,14 +753,12 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Text("同意后，双方可以直接聊天、发送图片和文件，直到断开连接。")
+            Text("同意后双方可以直接聊天、发送图片和文件。只需同意一次：以后这台设备连接无需再确认，上线时自动连接；可在设置的常驻联系人中移除。接收文件仍需确认。")
                 .font(.subheadline).foregroundStyle(.secondary)
             Text("接收位置：\(model.settings.receiveDirectory.path)").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("拒绝") { model.approveConnection(false) }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("同意并以后自动连接") { model.approveConnection(true, trust: true) }
-                    .help("设为常驻联系人：以后这台设备上线时自动连接，接收文件仍需确认")
                 Button("同意连接") { model.approveConnection(true) }.keyboardShortcut(.defaultAction)
             }
         }.padding(24).frame(width: 440).interactiveDismissDisabled()

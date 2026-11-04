@@ -143,7 +143,7 @@ final class ModelTransferTests: XCTestCase {
             }
             XCTAssertTrue(sender.isConnected)
             XCTAssertTrue(receiver.isConnected)
-            XCTAssertEqual(approvalsCount, 2)
+            XCTAssertEqual(approvalsCount, 1, "approval is asked once per device; reconnecting needs no prompt")
             XCTAssertEqual(senderLoader.calls, 1)
             XCTAssertEqual(receiverLoader.calls, 1)
         } else {

@@ -657,8 +657,9 @@ public sealed class AppSession
                 return true;
             }
         }
-        var consent = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, offerTrust: key is not null, ct);
-        if (consent == ConnectionConsent.AcceptedAndTrusted && key is not null) Post(() => SetTrustedPeer(key, true));
+        var consent = await UiPromptService.Current.ConfirmConnectionAsync(name, Settings.ReceiveFolder, ct);
+        // Approval is asked once per device: an accepted peer becomes a persistent contact.
+        if (consent == ConnectionConsent.Accepted && key is not null) Post(() => SetTrustedPeer(key, true));
         return consent != ConnectionConsent.Rejected;
     }
 

@@ -272,6 +272,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private var trustedDialTimer: Task<Void, Never>?
     private var isAutoDialing = false
     private static let trustedDialBackoff: [TimeInterval] = [30, 60, 300, 1800]
+    /// Direct peers whose connection dropped unexpectedly, with the time their automatic redial window ends. Behind
+    /// NAT the other side cannot dial back, so this side redials them like persistent contacts until then.
+    private var dropRedialDeadlines: [String: Date] = [:]
+    static let dropRedialWindow: TimeInterval = 3600
     /// Pending file confirmations are isolated by peer and transfer ID.
     private struct GroupFileJob { let envelope: GroupMessageEnvelope; let url: URL }
     private var groupFileQueues: [String: [GroupFileJob]] = [:]
@@ -661,7 +665,10 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
             if !isPreparingIdentity { Task { await start() } }
             return
         }
-        do { try lan.start(deviceName: settings.deviceName, fingerprint: identityFingerprint, avatarId: settings.avatarId) }
+        do {
+            try lan.start(deviceName: settings.deviceName, fingerprint: identityFingerprint, avatarId: settings.avatarId,
+                          probeTargets: settings.probeTargets, allowsProbes: settings.allowsProbes)
+        }
         catch { errorMessage = "无法启动局域网服务：\(error.localizedDescription)" }
     }
 
@@ -1182,10 +1189,12 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         pendingConnectionPeerFingerprint = currentID.flatMap { approvalPeerFingerprints[$0] }
     }
 
-    /// `trust` also adds the peer to the persistent contacts when the request is accepted.
-    func approveConnection(_ accepted: Bool, trust: Bool = false) {
+    /// Approval is asked once per device: accepting makes the peer a persistent contact, so its later connections
+    /// are approved without a prompt and it is redialed when it comes online. Removing it from the persistent
+    /// contacts asks again next time.
+    func approveConnection(_ accepted: Bool) {
         guard let id = approvalOrder.first else { return }
-        if accepted, trust, let fingerprint = approvalPeerFingerprints[id] {
+        if accepted, let fingerprint = approvalPeerFingerprints[id] {
             try? setTrustedPeer(fingerprint, trusted: true)
         }
         let continuation = approvalContinuations.removeValue(forKey: id)
@@ -1199,6 +1208,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private func install(_ connection: FileConnection, generation token: UUID) {
         let peerID = connection.peerFingerprint
         if trustedDialStates[trustKey(peerID)]?.suppressed != true { trustedDialStates[trustKey(peerID)] = nil }
+        dropRedialDeadlines.removeValue(forKey: trustKey(peerID))
         cacheDiscoveredAvatar(for: peerID)
         var purpose = purposeByToken[token] ?? .direct
         if case .direct = purpose, !directPeerIDs.contains(peerID), !messages.contains(where: { $0.peerID == peerID }) {
@@ -1735,6 +1745,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     func disconnect(peerID: String, failureReason: String? = nil, preservePendingRequests: Bool = false) {
         guard let token = peerTokens.removeValue(forKey: peerID) else { return }
+        let wasDirect = directPeerIDs.contains(peerID)
         if reconnectReplacementTokens[peerID] == token { reconnectReplacementTokens.removeValue(forKey: peerID) }
         activeConnectionTokens.remove(token)
         connectionTasksByToken.removeValue(forKey: token)?.cancel()
@@ -1801,7 +1812,14 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         isReceivingFile = !receivingPeers.isEmpty
         connectedPeerIDs = Set(channelsByPeer.keys)
         connectionState = isConnected ? "已连接：\(connectedPeerName)" : "已断开：\(connectedPeerName)"
-        if isTrustedPeer(peerID), trustedDialStates[trustKey(peerID)]?.suppressed != true {
+        // Only error-driven drops pass a failure reason while keeping pending requests; a manual disconnect or
+        // cancel passes neither, so it never arms the redial.
+        let droppedUnexpectedly = wasDirect && preservePendingRequests && failureReason != nil
+        if droppedUnexpectedly, !isTrustedPeer(peerID), trustedDialStates[trustKey(peerID)]?.suppressed != true {
+            dropRedialDeadlines[trustKey(peerID)] = Date().addingTimeInterval(Self.dropRedialWindow)
+        }
+        if isTrustedPeer(peerID) || dropRedialDeadlines[trustKey(peerID)] != nil,
+           trustedDialStates[trustKey(peerID)]?.suppressed != true {
             // Waiting first keeps a peer that just closed the connection from being redialed at once.
             trustedDialStates[trustKey(peerID), default: TrustedDialState()].nextAttempt = Date().addingTimeInterval(Self.trustedDialBackoff[0])
             connectTrustedPeers()
@@ -1950,6 +1968,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
 
     /// A user-initiated disconnect also stops automatic redialing of this peer until the user connects again.
     func disconnectByUser(peerID: String) {
+        dropRedialDeadlines.removeValue(forKey: trustKey(peerID))
         if isTrustedPeer(peerID) { trustedDialStates[trustKey(peerID), default: TrustedDialState()].suppressed = true }
         disconnect(peerID: peerID)
     }
@@ -1957,6 +1976,7 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
     private func noteTrustedDialFailure(_ peerID: String, rejected: Bool) {
         var state = trustedDialStates[peerID] ?? TrustedDialState()
         if rejected {
+            dropRedialDeadlines.removeValue(forKey: peerID)
             state.suppressed = true
         } else {
             state.failures += 1
@@ -1966,18 +1986,26 @@ final class TransferModel: ObservableObject, @unchecked Sendable {
         connectTrustedPeers()
     }
 
-    /// Dials discovered persistent contacts that are not connected. The peer with the larger
-    /// fingerprint waits 10 seconds after discovery so both sides rarely dial at once.
+    /// Peers dialed automatically: persistent contacts, then direct peers still inside their drop-redial window.
+    func autoDialPeerIDs(now: Date = Date()) -> [String] {
+        let trusted = settings.trustedPeers
+        return trusted + dropRedialDeadlines.filter { $0.value > now && !trusted.contains($0.key) }.keys.sorted()
+    }
+
+    /// Dials discovered persistent contacts (and recently dropped direct peers) that are not connected. The peer
+    /// with the larger fingerprint waits 10 seconds after discovery so both sides rarely dial at once.
     func connectTrustedPeers(now: Date = Date()) {
         trustedDialTimer?.cancel()
         trustedDialTimer = nil
         expireOutbox(now: now)
-        guard settings.firstRunComplete, isIdentityReady, !settings.trustedPeers.isEmpty else { return }
+        dropRedialDeadlines = dropRedialDeadlines.filter { $0.value > now }
+        let autoDialPeers = autoDialPeerIDs(now: now)
+        guard settings.firstRunComplete, isIdentityReady, !autoDialPeers.isEmpty else { return }
         let ownID = AvatarID.normalizeFingerprint(identityFingerprint) ?? ""
         var nextWake: Date?
         let connected = Set(channelsByPeer.keys.map(trustKey))
         let awaitingApproval = Set(approvalPeerFingerprints.values.map(trustKey))
-        for peerID in settings.trustedPeers where !connected.contains(peerID) {
+        for peerID in autoDialPeers where !connected.contains(peerID) {
             guard let device = nearbyDevice(for: peerID) else {
                 trustedDialStates[peerID]?.firstSeen = nil
                 continue
