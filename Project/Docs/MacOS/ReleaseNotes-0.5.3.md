@@ -1,6 +1,6 @@
 # macOS 0.5.3 发布说明
 
-状态：**待发布**（build 19）。逐轮实现与验证见 [macOS 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
+状态：**已发布**（2026-11-04，build 19，已公证）。公开页面为 [GitHub macos-v0.5.3](https://github.com/jiongboy/FeigeTransfer/releases/tag/macos-v0.5.3)。逐轮实现与验证见 [macOS 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
 
 ## 改进
 
@@ -26,6 +26,6 @@
 
 ## 发布前检查
 
-- [ ] 从已提交的代码构建
-- [ ] Developer ID 签名、公证并 staple
+- [x] 从已提交的代码构建（`2655477`）
+- [x] Developer ID 签名、公证并 staple
 - [ ] 从 0.5.2 升级

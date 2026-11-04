@@ -31,9 +31,12 @@ $versions = @($releases | ForEach-Object { $_.version } | Sort-Object -Unique)
 if ($versions.Count -ne 1) { throw "The manifest mixes versions: $($versions -join ', ')." }
 $tag = "v$($versions[0])"
 
-$view = gh release view $tag --repo $Repository --json assets,isLatest,isDraft,isPrerelease | ConvertFrom-Json
+$view = gh release view $tag --repo $Repository --json assets,isDraft,isPrerelease | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "GitHub release $tag was not found in $Repository." }
 if ($view.isDraft -or $view.isPrerelease) { throw "GitHub release $tag must be published and not a pre-release." }
+# Older gh builds have no isLatest field; the API's latest release is the source of truth.
+$latestTag = gh api "repos/$Repository/releases/latest" --jq .tag_name
+$isLatest = $LASTEXITCODE -eq 0 -and $latestTag -eq $tag
 $assets = @{}
 foreach ($asset in $view.assets) { $assets[$asset.name] = $asset }
 
@@ -62,12 +65,12 @@ try {
 
         $expected = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash
         $check = Join-Path $work 'check.json'
-        $url = if ($view.isLatest) { "https://github.com/$Repository/releases/latest/download/$name" }
+        $url = if ($isLatest) { "https://github.com/$Repository/releases/latest/download/$name" }
                else { "https://github.com/$Repository/releases/download/$tag/$name" }
         Invoke-WebRequest -Uri $url -OutFile $check -UseBasicParsing
         if ((Get-FileHash -LiteralPath $check -Algorithm SHA256).Hash -ne $expected) { throw "Read-back from $url does not match." }
         Write-Host "published $name to $tag; read back from $url"
-        if (-not $view.isLatest) { Write-Warning "$tag is not the Latest release, so clients do not see it yet." }
+        if (-not $isLatest) { Write-Warning "$tag is not the Latest release, so clients do not see it yet." }
     }
 }
 finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }

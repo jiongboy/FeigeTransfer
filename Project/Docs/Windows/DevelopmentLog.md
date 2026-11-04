@@ -15,6 +15,15 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-04 1.3.2 build 1308 正式发布
+
+- **构建与签名**：ROG 从 `2655477` 构建 x64、arm64，证书 `EFD99E9E…` 签名。x64 68,136,432 字节，SHA-256 `598C6578…76C02A44`；arm64 65,481,984 字节，SHA-256 `996F4717…6CD0E338`。sidecar `signed: true`。15 MB 分块传到 Mac 后哈希一致。
+- **两个发布坑**：(1) 计划任务里 `Get-AuthenticodeSignature` 的 `StatusMessage` 是中文，`VerifyPinnedAuthenticode.ps1` 只认英文的 BasicConstraints 提示，签名后校验失败；SSH 会话里是英文。改为在子进程里先 `SetThreadUILanguage(0x0409)` 再运行脚本。(2) 漏传 `-BuildNumber 1308` 时安装包名不带构建号；`Build-Installer.ps1` 输出到 `Release/Windows/<版本>/`，而 `New-UpdateRecord.ps1` 只接受 `dist/build/` 下的文件，需要手动复制过去。
+- **更新清单**：`New-UpdateRecord.ps1 -Tag v1.3.2-b1308` 生成记录，下载地址为 `192.168.50.229`。CNG 密钥 `feige-update-release-2026` 签名，ROG 与 Mac 上 `verify` 均通过。
+- **发布**：Mac mini `versions/v1.3.2-b1308`，经 `192.168.50.229` 与 `10.80.10.188` 两个地址重新下载，哈希一致；1.3.1 清单备份为 `feige-windows-update.previous.json` 后替换。GitHub Release `v1.3.2` 设为 Latest，安装包重新下载核对，`feige-windows-update.json` 经 `latest/download` 读回一致，安装包 302 到 `release-assets.githubusercontent.com`。
+- **脚本修复**：本机 `gh` 不支持 `--json isLatest`，`Publish-GitHubUpdate.ps1` 改用 `gh api repos/<repo>/releases/latest` 判断是否为 Latest。本次 GitHub 清单为手动上传，按同样步骤核对。
+- **未完成**：1.3.1 → 1.3.2 应用内升级、10.80.x 网段电脑经 `10.80.10.188` 或 GitHub 实际升级，都没有实测。
+
 ## 2026-11-04 1.3.2 补充：更新来源修复与旧客户端兼容
 
 - **原因**：二级路由器外的电脑（如 yangjifei，10.80.40.x）检查不到更新。局域网来源 `192.168.50.229` 在 NAT 后面不可达；GitHub 来源的清单路径与查询参数处理不兼容，一直返回 404。

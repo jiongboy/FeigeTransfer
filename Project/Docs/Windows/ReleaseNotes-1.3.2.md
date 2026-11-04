@@ -1,6 +1,6 @@
 # Windows 1.3.2 发布说明
 
-状态：**待发布**（build 1308）。逐轮实现与验证见 [Windows 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
+状态：**已发布**（2026-11-04，build 1308）。公开页面为 [GitHub v1.3.2](https://github.com/jiongboy/FeigeTransfer/releases/tag/v1.3.2)。逐轮实现与验证见 [Windows 开发日志](DevelopmentLog.md)，跨平台摘要见[更新日志](../Public/UpdateLog.md)。
 
 ## 改进
 
@@ -28,8 +28,8 @@
 
 ## 发布前检查
 
-- [ ] 从已提交的代码构建
-- [ ] ROG 上用正式证书签名，`.json` 中 `signed: true`
-- [ ] 更新清单 `protocolVersion` 为 3
+- [x] 从已提交的代码构建（`2655477`）
+- [x] ROG 上用正式证书签名，`.json` 中 `signed: true`
+- [x] 更新清单 `protocolVersion` 为 3，下载地址仍为 `192.168.50.229`
 - [ ] 表情面板实际点过；对方断开时不再出现红色错误条
 - [ ] 从 1.3.1 升级

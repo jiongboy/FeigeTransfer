@@ -4,6 +4,13 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-04：0.5.3 build 19 正式发布
+
+- **打包与公证**：从 `2655477` 运行 `FEIGE_NOTARY_PROFILE=feige-notary package-app.sh`，公证提交 `0dc27fea-d62f-4e20-98ae-6fdc61c8a157` 为 Accepted，已 staple。`spctl` 为 Notarized Developer ID；`Feige.icns` 与仓库主图标一致。`FeigeMac-0.5.3.zip` 3,448,560 字节，SHA-256 `2e6305b6…39338df5`。
+- **更新源**：发布记录 `0.5.3-b19`（`protocolVersion` 6）用 `~/.feige/macos-release.pem` 经 `openssl` 签名，用 `UpdateSource.json` 公钥验签通过。上传到 Mac mini 临时目录 → 哈希核对 → 改名为 `versions/0.5.3-b19` → HTTP 重新下载核对 → 0.5.2 清单备份为 `feige-macos-update.previous.json` 后替换清单，线上清单与本地一致。签名清单与发布记录另存到 `Release/MacOS/0.5.3/`。
+- **GitHub**：Release `macos-v0.5.3`（非 Latest，Latest 为 `v1.3.2`），重新下载校验通过。
+- **未完成**：0.5.2 → 0.5.3 应用内升级未实测。
+
 ## 2026-11-04：0.5.3 build 19 版本号
 
 - `Info.plist` 升为 0.5.3（build 19），包含 `f55ed49`（自动重连失败不弹框）与 `1d5d263`（探测发现、断线重拨、一次性同意连接）。

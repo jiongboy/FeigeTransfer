@@ -3,6 +3,13 @@
 > 只记录对双端或协作方式有影响的变更，按时间倒序排列。平台内部实现细节见各平台开发日志：
 > [macOS 开发日志](../MacOS/DevelopmentLog.md) · [Windows 开发日志](../Windows/DevelopmentLog.md)
 
+## 2026-11-04 正式发布 Windows 1.3.2 与 macOS 0.5.3
+
+- 两端都从 `2655477` 构建。Windows 1.3.2 b1308（x64、arm64）由 ROG 正式证书签名；macOS 0.5.3 b19 经 Apple 公证。交付物在 `Release/Windows/1.3.2/` 与 `Release/MacOS/0.5.3/`。
+- Mac mini 局域网更新源：两个清单都已替换，旧清单保留为 `*.previous.json`。经 `192.168.50.229` 与 `10.80.10.188` 读取一致。
+- GitHub：`v1.3.2` 设为 Latest，附带 `feige-windows-update.json`，新客户端的 GitHub 备用来源可以用了；`macos-v0.5.3` 不设 Latest。
+- 未完成：两端的应用内升级都没有实测；其他网段的 1.3.1 电脑（如 yangjifei）需要手动安装一次 1.3.2。
+
 ## 2026-11-04 更新来源修复、一次性同意连接（Windows 1.3.2 / macOS 0.5.3）
 
 - **Windows 更新来源**：局域网来源改为公司内网可达的 `10.80.10.188:8080`，GitHub Release 备用来源修复；清单仍写 `192.168.50.229` 地址，旧客户端可在二级路由器下升级，新客户端自动改写到实际来源。其他网段的 1.3.1 需手动安装一次 1.3.2。
