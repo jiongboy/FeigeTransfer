@@ -15,6 +15,12 @@
 > | `开发文档/` | `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`） |
 > | 旧 `windows` / `macOS` / `main` 分支 | 统一为单一 `main` 主线 |
 
+## 2026-11-04 1.3.2 补充：发文字断开不再显示错误条
+
+- **原因**：`SendPage.SendTextAsync` 对 `Session.SendTextAsync` 的任何异常都调用 `ShowError`，连接在发送途中断开时，消息已由 `MarkFailedAsync` 标为失败，页面又额外出现红色错误条。
+- **改动**：`NetworkFailureAdvice.IsApplicable(ex)` 为真（套接字超时/重置、`TimeoutException`、`EndOfStreamException`、协议超时或意外结束）时不再 `ShowError`；未连接等其他错误照常显示。自动重连本来就以 `quiet: true` 调用 `ConnectAsync`，群组连接失败不报错，无需改动。随 1.3.2 build 1308 一起发布（`f55ed49`）。
+- **验证**：Parallels 虚拟机构建通过，Core 624/624。未验证：实际断开时的人工确认。
+
 ## 2026-11-03 1.3.2：表情面板崩溃、断开改为状态提示
 
 - **表情崩溃**：点击“表情”即退出，事件日志为 `Microsoft.UI.Xaml.dll` stowed exception `0xc000027b`。`SendPage.CreateEmojiFlyout` 用 `new WrapGrid` 直接 `Children.Add` 按钮，`WrapGrid` 只能作 `ItemsPanel`，弹出时布局抛异常。改为 `VariableSizedWrapGrid`（同样的 `Orientation`、`MaximumRowsOrColumns`、`ItemWidth/ItemHeight`）。设置页、引导页头像选择的 `ItemsWrapGrid` 在 `ItemsPanel` 内，不受影响。

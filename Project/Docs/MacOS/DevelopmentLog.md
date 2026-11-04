@@ -4,6 +4,12 @@
 
 > **路径写法说明（2026-10-27 重命名）**：本日志是历史记录，条目中的路径按当时布局书写。旧 `macOS/` 现为 `Project/MacOS/`，旧 `macOS/dist/` 与 `download/` 现统一为 `Release/MacOS/<版本号>/`，旧 `开发文档/` 现为 `Project/Docs/`（分为 `Public/`、`Windows/`、`MacOS/`）。
 
+## 2026-11-04：自动重连失败不再弹框（待下一版）
+
+- **原因**：0.5.2 仍会弹出“局域网传输超时。”。连接尝试失败的 `catch` 对除本机拒绝外的所有失败设置 `errorMessage`，信任设备自动重连（`connectTrustedPeers`）、群组自动连接和对方发起的握手超时都会弹框；发文字因断开失败也会弹框。消息记录中没有超时失败的消息，判断为连接尝试路径。
+- **改动**：新增 `userInitiatedConnectionTokens`，`beginConnection(..., userInitiated:)` 只在 `requestConnection` 非自动拨号与 `reconnectGroupMember` 时标记；只有这些尝试失败才弹框（保留“连接排查”），其他失败只把 `connectionState` 设为“连接未建立：…”。`finishConnectionAttempt` 清理标记。发文字失败沿用 `isConnectionLoss` 跳过弹框。代码已提交 `f55ed49`，未包含在已发布的 0.5.2 中。
+- **验证**：全量 `swift test` 通过。未验证：实际自动重连超时场景。
+
 ## 2026-11-03：0.5.2 build 18 正式发布
 
 - **打包与公证**：从 `4ad7245` 运行 `FEIGE_NOTARY_PROFILE=feige-notary package-app.sh`，Developer ID Application: Song Li (9C8Y647J2R) 签名，公证提交 `d4e0229f-38b0-4bd1-8f8c-e7ed4dd7a39c` 为 Accepted，已 staple；`spctl` 为 Notarized Developer ID，zip 解压后的应用同样通过；`Feige.icns` 与仓库主图标一致。`FeigeMac-0.5.2.zip` 3,444,671 字节，SHA-256 `9b36a608…7daad62a`。
