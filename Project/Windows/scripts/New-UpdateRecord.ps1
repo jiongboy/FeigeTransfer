@@ -1,6 +1,9 @@
 <#
 .SYNOPSIS
   Create an unsigned release record from final, already built/signed EXE packages under Project/Windows/dist/build.
+.PARAMETER PackageBaseUri
+  Base written into notesUrl/downloadUrl. Clients up to 1.3.1 only trust http://192.168.50.229:8080/updates,
+  so the default keeps that address; 1.3.2+ clients rebase these URLs onto whichever origin served the manifest.
 .PARAMETER ProtocolVersion
   Update-compatibility key, not the LAN communication protocol. Every shipped Windows client builds its
   UpdateTarget with the default 3 and only accepts releases with an exactly equal value, so any other
@@ -11,7 +14,8 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string[]]$InstallerPath, [Parameter(Mandatory)][string]$Tag,
     [Parameter(Mandatory)][string]$SummaryFile, [ValidateSet(3)][int]$ProtocolVersion = 3,
-    [string]$MinimumSystemVersion = '10.0.17763.0')
+    [string]$MinimumSystemVersion = '10.0.17763.0',
+    [ValidatePattern('^https?://[^?#]+$')][string]$PackageBaseUri = 'http://192.168.50.229:8080/updates')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
@@ -31,6 +35,7 @@ function Get-LanSource([pscustomobject]$SourceConfig) {
     return [pscustomobject]@{ baseUri = $lan.baseUri; hosts = $hosts; allowInsecurePrivateNetwork = [bool]$lan.allowInsecurePrivateNetwork }
 }
 $lan = Get-LanSource $source
+$packageBase = [Uri]::new($PackageBaseUri.TrimEnd('/') + '/')
 if ($source.channel -notin @('stable', 'preview')) { throw 'Configured update channel is invalid.' }
 if ($MinimumSystemVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'MinimumSystemVersion must be four numeric parts.' }
 if ($Tag -in @('.', '..') -or $Tag -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid release tag.' }
@@ -81,8 +86,8 @@ foreach ($inputPath in $InstallerPath) {
         platform='windows'; architecture=$metadata.architecture; channel=$source.channel; installation='exe'
         version=$metadata.version; build=[long]$metadata.build; publishedAt=[DateTimeOffset]::UtcNow.ToString('o')
         minimumSystemVersion=$MinimumSystemVersion; summary=$summary
-        notesUrl=([Uri]::new([Uri]::new(([string]$lan.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/notes")).AbsoluteUri
-        downloadUrl=([Uri]::new([Uri]::new(([string]$lan.baseUri).TrimEnd('/') + '/'), "windows/$($source.channel)/versions/$Tag/$name")).AbsoluteUri
+        notesUrl=([Uri]::new($packageBase, "windows/$($source.channel)/versions/$Tag/notes")).AbsoluteUri
+        downloadUrl=([Uri]::new($packageBase, "windows/$($source.channel)/versions/$Tag/$name")).AbsoluteUri
         size=(Get-Item -LiteralPath $file).Length; sha256=$hash; protocolVersion=$ProtocolVersion
     }
 }
