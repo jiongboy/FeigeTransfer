@@ -115,8 +115,8 @@ public sealed class AppUpdates
         Status = "正在检查更新…"; Notify();
         try
         {
-            var state = _states!.Get(Scope) with { LastAttempt = DateTimeOffset.UtcNow, LastResult = "上次检查未完成" };
-            _states.Save(Scope, state); // Failures and cancellation also count toward the automatic interval.
+            var state = _states!.Get(Scope) with { LastAttempt = DateTimeOffset.UtcNow, LastResult = "上次检查未完成", LastFailed = true };
+            _states.Save(Scope, state); // Until it succeeds this attempt counts as failed, so automatic checks retry within an hour.
             var result = await _client!.CheckAsync(_target, state.HighestSeen, _operation.Token);
             _source = result.Source;
             var selection = result.Selection;
@@ -124,7 +124,7 @@ public sealed class AppUpdates
             var originSuffix = result.Source.Id is "github" ? "（GitHub 来源）" : "";
             Status = selection.Kind switch { UpdateCheckKind.Available => $"发现新版本 {Candidate!.Version}{originSuffix}",
                 UpdateCheckKind.NoCompatibleUpdate => "当前系统、架构或安装渠道暂无兼容更新", _ => $"已是最新版本{originSuffix}" };
-            state = state with { LastResult = Status, HighestSeen = Math.Max(state.HighestSeen, selection.HighestCompatibleBuild) };
+            state = state with { LastResult = Status, LastFailed = false, HighestSeen = Math.Max(state.HighestSeen, selection.HighestCompatibleBuild) };
             if (!manual && Candidate is { } candidate && state.ShouldPrompt(candidate.Build, DateTimeOffset.UtcNow))
             {
                 state = state with { LastPromptAt = DateTimeOffset.UtcNow, LastPromptBuild = candidate.Build };

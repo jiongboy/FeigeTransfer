@@ -3,12 +3,13 @@
   "sources": [
     {
       "label": "lan",
-      "baseUri": "http://192.168.50.229:8080/updates",
-      "hosts": [ "192.168.50.229" ],
+      "baseUri": "http://10.80.10.188:8080/updates",
+      "hosts": [ "10.80.10.188" ],
       "allowInsecurePrivateNetwork": true
     },
     {
       "label": "github",
+      "layout": "github-release",
       "baseUri": "https://github.com/jiongboy/FeigeTransfer/releases/latest/download",
       "hosts": [ "github.com" ],
       "redirectHosts": [ "objects.githubusercontent.com", "release-assets.githubusercontent.com" ]

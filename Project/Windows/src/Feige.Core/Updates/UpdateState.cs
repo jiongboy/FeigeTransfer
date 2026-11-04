@@ -4,9 +4,12 @@ using System.Text.Json.Serialization;
 namespace Feige.Core.Updates;
 
 public sealed record UpdateScopeState(DateTimeOffset? LastAttempt = null, long HighestSeen = 0, long SkippedBuild = 0,
-    string LastResult = "尚未检查更新", long LastPromptBuild = 0, DateTimeOffset? LastPromptAt = null)
+    string LastResult = "尚未检查更新", long LastPromptBuild = 0, DateTimeOffset? LastPromptAt = null, bool LastFailed = false)
 {
-    public bool IsDue(DateTimeOffset now) => LastAttempt is null || now - LastAttempt >= TimeSpan.FromHours(24);
+    public static readonly TimeSpan CheckInterval = TimeSpan.FromHours(24);
+    public static readonly TimeSpan RetryInterval = TimeSpan.FromHours(1);
+    /// <summary>A failed or unfinished check is retried after an hour instead of waiting a full day.</summary>
+    public bool IsDue(DateTimeOffset now) => LastAttempt is null || now - LastAttempt >= (LastFailed ? RetryInterval : CheckInterval);
     public bool ShouldPrompt(long build, DateTimeOffset now) => build != SkippedBuild &&
         (LastPromptBuild != build || LastPromptAt is null || now - LastPromptAt >= TimeSpan.FromHours(24));
 }

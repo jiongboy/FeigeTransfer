@@ -45,6 +45,8 @@ public sealed class UpdateTests
         Assert.Equal(UpdateCheckKind.UpToDate, manifest.Select(Target() with { Build = 20 }, 20).Kind);
         Assert.Equal(UpdateCheckKind.UpToDate, manifest.Select(Target() with { Version = "1.11.0" }, 0).Kind);
         Assert.Throws<InvalidDataException>(() => manifest.Select(Target(), 21));
+        // An origin lagging behind a build seen elsewhere is up to date when it offers nothing newer than what runs.
+        Assert.Equal(UpdateCheckKind.UpToDate, manifest.Select(Target() with { Build = 20 }, 21).Kind);
     }
 
     [Theory]
@@ -82,18 +84,30 @@ public sealed class UpdateTests
 
     [Theory]
     [InlineData("http://192.168.50.229:8080/updates/windows/stable/versions/v1/setup.exe?token=secret")]
-    [InlineData("http://192.168.50.230:8080/updates/windows/stable/versions/v1/setup.exe")]
-    [InlineData("https://192.168.50.229:8080/updates/windows/stable/versions/v1/setup.exe")]
-    [InlineData("http://192.168.50.229:8081/updates/windows/stable/versions/v1/setup.exe")]
     [InlineData("http://192.168.50.229:8080/updates/windows/stable/versions/v1/setup.exe?token=x")]
-    [InlineData("http://user@192.168.50.229:8080/updates/windows/stable/versions/v1/setup.exe")]
     [InlineData("http://192.168.50.229:8080/updates/windows/preview/versions/v1/setup.exe")]
     [InlineData("http://192.168.50.229:8080/updates/windows/stable/versions/v1/../setup.exe")]
-    [InlineData("https://evil.example/updates/windows/stable/versions/v1/setup.exe")]
+    [InlineData("http://192.168.50.229:8080/updates/windows/stable/setup.exe")]
     public void SignedButUntrustedPackageAddress_IsRejected(string url)
     {
         using var f = new Fixture();
         Assert.Throws<InvalidDataException>(() => UpdateManifest.Verify(f.Sign([Release() with { DownloadUrl = url }]), f.Source));
+    }
+
+    [Theory]
+    [InlineData("http://192.168.50.230:8080/updates/windows/stable/versions/v1/setup.exe")]
+    [InlineData("https://192.168.50.229:8080/updates/windows/stable/versions/v1/setup.exe")]
+    [InlineData("http://192.168.50.229:8081/updates/windows/stable/versions/v1/setup.exe")]
+    [InlineData("http://user@192.168.50.229:8080/updates/windows/stable/versions/v1/setup.exe")]
+    [InlineData("https://evil.example/updates/windows/stable/versions/v1/setup.exe")]
+    public void SignedPackageAddress_IsAlwaysFetchedFromTheServingOrigin(string url)
+    {
+        // The host inside a signed manifest is never contacted: only the tag and file name are used, on the
+        // origin that served the manifest, and the download is still checked against size, SHA-256 and pin.
+        using var f = new Fixture();
+        var release = Assert.Single(UpdateManifest.Verify(f.Sign([Release() with { DownloadUrl = url }]), f.Source).Releases);
+        Assert.Equal("http://192.168.50.229:8080/updates/windows/stable/versions/v1/setup.exe", release.DownloadUrl);
+        Assert.Equal("http://192.168.50.229:8080/updates/windows/stable/versions/v1/notes", release.NotesUrl);
     }
 
     [Fact] public void HttpSourceRequiresExplicitPrivateNetworkFlagAndRejectsPublicAddresses()
@@ -118,8 +132,9 @@ public sealed class UpdateTests
     {
         using var f = new Fixture();
         var source = f.Source with { TrustedHosts = ["192.168.50.229", "192.168.50.230"] };
-        var malicious = Release() with { DownloadUrl = "http://192.168.50.230:8080/updates/windows/stable/versions/v1.10.0-b20/setup.exe" };
-        Assert.Throws<InvalidDataException>(() => UpdateManifest.Verify(f.Sign([malicious]), source));
+        var other = Release() with { DownloadUrl = "http://192.168.50.230:8080/updates/windows/stable/versions/v1.10.0-b20/setup.exe" };
+        var release = Assert.Single(UpdateManifest.Verify(f.Sign([other]), source).Releases);
+        Assert.Equal("192.168.50.229", new Uri(release.DownloadUrl).Host);
     }
 
     [Fact] public async Task Check_FollowsOnlyConfiguredLanRedirectsAndSendsNoCredentialsOrDeviceData()
@@ -194,6 +209,10 @@ public sealed class UpdateTests
             file.Save("lan/windows/x64/stable/exe", value);
             var restored = new UpdateStateFile(directory).Get("lan/windows/x64/stable/exe");
             Assert.False(restored.IsDue(now.AddHours(23))); Assert.True(restored.IsDue(now.AddHours(24)));
+            var failed = restored with { LastFailed = true };
+            file.Save("lan/windows/x64/stable/exe", failed);
+            var retry = new UpdateStateFile(directory).Get("lan/windows/x64/stable/exe");
+            Assert.False(retry.IsDue(now.AddMinutes(59))); Assert.True(retry.IsDue(now.AddHours(1)));
             Assert.False(restored.ShouldPrompt(20, now)); Assert.True(restored.ShouldPrompt(21, now));
             Assert.Equal(0, new UpdateStateFile(directory).Get("other/windows/x64/stable/exe").HighestSeen);
             File.WriteAllText(Path.Combine(directory, "update-state.json"), "{\"version\":2,\"scopes\":{}}");

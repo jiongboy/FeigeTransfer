@@ -35,7 +35,11 @@ public sealed class UpdateClient : IDisposable
 
     private static HttpClient CreateHttp(HttpMessageHandler? handler)
     {
-        var http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false, UseDefaultCredentials = false });
+        // A short connect timeout lets an unreachable LAN origin fall through to the next one quickly.
+        var http = new HttpClient(handler ?? new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false, UseCookies = false, Credentials = null, ConnectTimeout = TimeSpan.FromSeconds(5),
+        });
         http.Timeout = TimeSpan.FromSeconds(30);
         http.DefaultRequestHeaders.UserAgent.ParseAdd("Feige-Update/1");
         return http;
@@ -53,7 +57,7 @@ public sealed class UpdateClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         _sources.Validate();
-        Exception? lastFallback = null;
+        Exception? lastFallback = null, unreachable = null;
         foreach (var origin in _origins)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -67,9 +71,12 @@ public sealed class UpdateClient : IDisposable
             {
                 if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested) throw;
                 lastFallback = ex;
+                if (ex is not HttpRequestException { StatusCode: HttpStatusCode.NotFound }) unreachable ??= ex;
             }
         }
         _active = null;
+        // "No release published" is reported only when every origin answered so; otherwise say it was unreachable.
+        if (unreachable is not null) throw new HttpRequestException("无法连接更新服务。", unreachable);
         throw lastFallback ?? new HttpRequestException("没有可用的更新来源。", null, HttpStatusCode.NotFound);
     }
 

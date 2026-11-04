@@ -31,10 +31,8 @@ public sealed record UpdateRelease(
         if (!Uri.TryCreate(DownloadUrl, UriKind.Absolute, out var download) || !Uri.TryCreate(NotesUrl, UriKind.Absolute, out var notes))
             throw new InvalidDataException("更新地址无效。");
         source.RequireInitialUri(download); source.RequireInitialUri(notes, notes: true);
-        var downloadParts = download.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var notesParts = notes.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         if (!StringComparer.OrdinalIgnoreCase.Equals(download.Authority, notes.Authority) ||
-            downloadParts.Length != notesParts.Length || downloadParts.Length < 2 || downloadParts[^2] != notesParts[^2])
+            source.ReleaseTag(download, notes: false) != source.ReleaseTag(notes, notes: true))
             throw new InvalidDataException("安装包与说明的发布标签不一致。");
     }
 }
@@ -89,14 +87,16 @@ public sealed class UpdateManifest
             if (document.SchemaVersion != 1 || document.Releases is null || document.Releases.Length > 64)
                 throw new InvalidDataException("更新内容格式不受支持。");
             var scopes = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var release in document.Releases)
+            var releases = new UpdateRelease[document.Releases.Length];
+            for (int i = 0; i < releases.Length; i++)
             {
-                if (release is null) throw new InvalidDataException("更新条目为空。");
+                if (document.Releases[i] is null) throw new InvalidDataException("更新条目为空。");
+                var release = releases[i] = source.Rebase(document.Releases[i]);
                 release.Validate(source);
                 if (!scopes.Add($"{release.Platform}/{release.Architecture}/{release.Channel}/{release.Installation}/{release.Build}"))
                     throw new InvalidDataException("更新构建号重复。");
             }
-            return new(document.Releases);
+            return new(releases);
         }
         catch (Exception ex) when (ex is JsonException or FormatException or CryptographicException or ArgumentException)
         { throw new InvalidDataException("更新清单格式或签名验证失败。", ex); }
@@ -109,10 +109,11 @@ public sealed class UpdateManifest
             System.Version.Parse(r.MinimumSystemVersion) <= target.SystemVersion).ToArray();
         if (candidates.Length == 0) return new(UpdateCheckKind.NoCompatibleUpdate, null);
         var latest = candidates.OrderByDescending(r => r.Build).First();
-        if (latest.Build < highestSeen) throw new InvalidDataException("发布信息早于本机已验证的版本，请稍后重试。");
         var current = ParseVersion(target.Version);
+        // A lagging origin (e.g. GitHub behind the LAN) offering nothing newer than what runs is simply up to date.
         if (ParseVersion(latest.Version) < current || latest.Build <= target.Build)
             return new(UpdateCheckKind.UpToDate, null, latest.Build);
+        if (latest.Build < highestSeen) throw new InvalidDataException("发布信息早于本机已验证的版本，请稍后重试。");
         return new(UpdateCheckKind.Available, latest, latest.Build);
     }
 

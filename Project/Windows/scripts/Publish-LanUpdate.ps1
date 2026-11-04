@@ -46,9 +46,9 @@ if ($lanEntries.Count -ne 1) { throw 'UpdateSource.json must contain exactly one
 $lanSource = $lanEntries[0]
 $lanHosts = if ($lanSource.hosts) { @($lanSource.hosts) } else { @($lanSource.trustedHosts) }
 $configuredOrigin = [Uri]$lanSource.baseUri
-if ($configuredOrigin.AbsolutePath.TrimEnd('/') -ne '/updates' -or $configuredOrigin.Host -ne '192.168.50.229' -or
+if ($configuredOrigin.AbsolutePath.TrimEnd('/') -ne '/updates' -or $configuredOrigin.Host -ne '10.80.10.188' -or
     $configuredOrigin.Port -ne 8080 -or $configuredOrigin.Scheme -ne 'http' -or !$lanSource.allowInsecurePrivateNetwork -or
-    $lanHosts -notcontains '192.168.50.229') {
+    $lanHosts -notcontains '10.80.10.188') {
     throw 'LAN update source does not match the explicitly configured Mac mini origin.'
 }
 $toolDirectory = Join-Path $windowsRoot 'dist\update-tool'

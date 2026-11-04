@@ -15,8 +15,13 @@ namespace Feige.Core.Updates;
 public sealed record UpdateSource(string Channel,
     Dictionary<string, string> PublicKeys, string[] PublisherCertificateSha256,
     string? BaseUri = null, string[]? TrustedHosts = null, bool AllowInsecurePrivateNetwork = false,
-    string? Label = null, string[]? Hosts = null, string[]? RedirectHosts = null)
+    string? Label = null, string[]? Hosts = null, string[]? RedirectHosts = null, string? Layout = null)
 {
+    /// <summary>GitHub Releases keep assets flat under a tag, so that origin cannot mirror the versions/ tree.</summary>
+    public const string GitHubReleaseLayout = "github-release";
+    private const string GitHubLatestSuffix = "/releases/latest/download";
+    public bool IsGitHubRelease => Layout == GitHubReleaseLayout;
+
     /// <summary>Stable identifier used for per-origin state and messages.</summary>
     public string Id => string.IsNullOrWhiteSpace(Label) ? BaseUri ?? "unconfigured" : Label!;
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseUri) && PublicKeys is { Count: > 0 };
@@ -25,16 +30,53 @@ public sealed record UpdateSource(string Channel,
     public Uri BaseDirectory => new(BaseAddress.AbsoluteUri.TrimEnd('/') + "/", UriKind.Absolute);
     public string NormalizedBasePath => BaseDirectory.AbsolutePath.TrimEnd('/');
     public string ReleaseBasePath => new Uri(BaseDirectory, $"windows/{Channel}/").AbsoluteUri.TrimEnd('/');
-    public Uri ManifestUri => new(BaseDirectory, $"windows/{Channel}/feige-windows-update.json");
+    public Uri ManifestUri => IsGitHubRelease ? new(BaseDirectory, "feige-windows-update.json")
+        : new(BaseDirectory, $"windows/{Channel}/feige-windows-update.json");
+    /// <summary>For the GitHub layout: <c>/owner/repo/releases</c>, under which tags live.</summary>
+    private string GitHubReleasesPath => NormalizedBasePath[..^GitHubLatestSuffix.Length] + "/releases";
+
+    /// <summary>
+    /// Points a signed release's package and notes at this origin. One signed manifest is published to every
+    /// origin, so its absolute addresses name only one of them; the tag and file name select the same content
+    /// here, and the size, SHA-256 and publisher pin are still checked after download.
+    /// </summary>
+    public UpdateRelease Rebase(UpdateRelease release)
+    {
+        if (!TryVersionsPath(release.DownloadUrl, out var tag, out var file)) return release;
+        if (IsGitHubRelease)
+        {
+            var root = $"{BaseAddress.Scheme}://{BaseAddress.Authority}{GitHubReleasesPath}";
+            var githubTag = "v" + release.Version;
+            return release with { DownloadUrl = $"{root}/download/{githubTag}/{file}", NotesUrl = $"{root}/tag/{githubTag}" };
+        }
+        var versions = $"{BaseDirectory.AbsoluteUri}windows/{Channel}/versions/{tag}/";
+        return release with { DownloadUrl = versions + file, NotesUrl = versions + "notes" };
+    }
+
+    private bool TryVersionsPath(string url, out string tag, out string file)
+    {
+        tag = file = "";
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Query.Length != 0 || uri.Fragment.Length != 0) return false;
+        var parts = uri.AbsolutePath.Split('/');
+        if (parts.Length < 5 || parts[^5] != "windows" || parts[^4] != Channel || parts[^3] != "versions") return false;
+        tag = parts[^2]; file = parts[^1];
+        return Regex.IsMatch(tag, "^[A-Za-z0-9._-]+$") && Regex.IsMatch(file, "^[A-Za-z0-9._-]+$") && tag is not ("." or "..") && file is not ("." or "..");
+    }
 
     /// <summary>Validates a redirect hop: an allowlisted host on this origin, or a listed release CDN.</summary>
     public void RequireRedirectUri(Uri uri)
     {
-        if (!uri.IsAbsoluteUri || uri.OriginalString.Contains('?')) throw new InvalidDataException("更新地址或重定向不受信任。");
-        if (IsThisOrigin(uri)) { RequireOrigin(uri); return; }
+        if (!uri.IsAbsoluteUri) throw new InvalidDataException("更新地址或重定向不受信任。");
+        if (IsThisOrigin(uri))
+        {
+            if (uri.OriginalString.Contains('?')) throw new InvalidDataException("更新地址或重定向不受信任。");
+            RequireOrigin(uri); return;
+        }
+        // Release CDNs answer only short-lived signed URLs, so their query string is allowed; content is still
+        // verified against the signed manifest.
         if (RedirectHosts is not { Length: > 0 } || !RedirectHosts.Contains(uri.IdnHost, StringComparer.OrdinalIgnoreCase) ||
             !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.Ordinal) || uri.Port != 443 ||
-            uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0 ||
+            uri.UserInfo.Length != 0 || uri.Fragment.Length != 0 ||
             uri.AbsolutePath.Contains("..", StringComparison.Ordinal) || uri.AbsolutePath.Contains('%'))
             throw new InvalidDataException("更新地址或重定向不受信任。");
     }
@@ -79,7 +121,10 @@ public sealed record UpdateSource(string Channel,
             baseUri.AbsolutePath.Contains("..", StringComparison.Ordinal) || hosts is null || hosts.Length is < 1 or > 8 ||
             hosts.Any(host => !IsValidHost(host)) || !hosts.Contains(baseUri.IdnHost, StringComparer.OrdinalIgnoreCase) ||
             RedirectHosts is { Length: > 8 } || RedirectHosts?.Any(host => !IsValidHost(host)) == true ||
-            baseUri.Scheme == Uri.UriSchemeHttp && (!AllowInsecurePrivateNetwork || !IPAddress.TryParse(baseUri.Host, out var baseIp) || !IsPrivateAddress(baseIp)))
+            baseUri.Scheme == Uri.UriSchemeHttp && (!AllowInsecurePrivateNetwork || !IPAddress.TryParse(baseUri.Host, out var baseIp) || !IsPrivateAddress(baseIp)) ||
+            Layout is not (null or GitHubReleaseLayout) ||
+            IsGitHubRelease && (baseUri.Scheme != Uri.UriSchemeHttps || !NormalizedBasePath.EndsWith(GitHubLatestSuffix, StringComparison.Ordinal) ||
+                NormalizedBasePath.Count(c => c == '/') != 5))
             throw new InvalidDataException("更新来源尚未正确配置。");
     }
 
@@ -90,6 +135,7 @@ public sealed record UpdateSource(string Channel,
             throw new InvalidDataException("更新地址不属于配置的受信任服务。");
         var prefix = $"{NormalizedBasePath}/windows/{Channel}/";
         if (uri.AbsolutePath == ManifestUri.AbsolutePath) return;
+        if (IsGitHubRelease) { RequireGitHubReleaseUri(uri, notes); return; }
         if (!uri.AbsolutePath.StartsWith(prefix, StringComparison.Ordinal))
             throw new InvalidDataException("更新地址不属于配置的发布渠道。");
         var parts = uri.AbsolutePath[prefix.Length..].Split('/');
@@ -99,6 +145,24 @@ public sealed record UpdateSource(string Channel,
         if (notes && parts[2] != "notes") throw new InvalidDataException("更新说明地址格式无效。");
         if (!notes && (parts[2] == "notes" || !parts[2].EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("更新包地址格式无效。");
+    }
+
+    /// <summary>Package: <c>/owner/repo/releases/download/tag/file.exe</c>; notes: <c>/owner/repo/releases/tag/tag</c>.</summary>
+    private void RequireGitHubReleaseUri(Uri uri, bool notes)
+    {
+        var prefix = GitHubReleasesPath + "/";
+        if (!uri.AbsolutePath.StartsWith(prefix, StringComparison.Ordinal)) throw new InvalidDataException("更新地址不属于配置的发布渠道。");
+        var parts = uri.AbsolutePath[prefix.Length..].Split('/');
+        if (parts.Any(p => p is "." or ".." || !Regex.IsMatch(p, "^[A-Za-z0-9._-]+$"))) throw new InvalidDataException("更新地址格式无效。");
+        if (notes ? parts is not ["tag", _] : parts is not ["download", _, var file] || !file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(notes ? "更新说明地址格式无效。" : "更新包地址格式无效。");
+    }
+
+    /// <summary>The release tag a validated package or notes address belongs to.</summary>
+    public string ReleaseTag(Uri uri, bool notes)
+    {
+        var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return IsGitHubRelease && notes ? parts[^1] : parts[^2];
     }
 
     /// <summary>Copies legacy single-origin fields onto the current shape.</summary>
